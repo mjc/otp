@@ -135,6 +135,8 @@ Supports basic data mapping:
 | `#{integer() => _}`    | Object   |
 | `#{float() => _}`      | Object   |
 
+Map keys are encoded as JSON object names, which are strings.
+
 This is equivalent to `encode(Term, fun json:encode_value/2)`.
 
 ## Examples
@@ -251,7 +253,8 @@ list_loop([Elem | Rest], Encode) -> [$,, Encode(Elem, Encode) | list_loop(Rest, 
 -doc """
 Default encoder for maps as JSON objects used by `json:encode/1`.
 
-Accepts maps with atom, binary, integer, or float keys.
+Accepts Erlang maps with atom, binary, integer, or float keys.
+The keys are encoded as JSON object names.
 """.
 -doc(#{since => <<"OTP 27.0">>}).
 -spec encode_map(encode_map(dynamic()), encoder()) -> iodata().
@@ -264,7 +267,8 @@ do_encode_map(Map, Encode) when is_function(Encode, 2) ->
 -doc """
 Encoder for maps as JSON objects.
 
-Accepts maps with atom, binary, integer, or float keys.
+Accepts Erlang maps with atom, binary, integer, or float keys.
+The keys are encoded as JSON object names.
 Verifies that no duplicate keys will be produced in the
 resulting JSON object.
 
@@ -280,7 +284,8 @@ encode_map_checked(Map, Encode) ->
 -doc """
 Encoder for lists of key-value pairs as JSON objects.
 
-Accepts lists with atom, binary, integer, or float keys.
+Accepts key-value lists with atom, binary, integer, or float keys.
+The keys are encoded as JSON object names.
 """.
 -doc(#{since => <<"OTP 27.0">>}).
 -spec encode_key_value_list([{term(), term()}], encoder()) -> iodata().
@@ -290,7 +295,8 @@ encode_key_value_list(List, Encode) when is_function(Encode, 2) ->
 -doc """
 Encoder for lists of key-value pairs as JSON objects.
 
-Accepts lists with atom, binary, integer, or float keys.
+Accepts key-value lists with atom, binary, integer, or float keys.
+The keys are encoded as JSON object names.
 Verifies that no duplicate keys will be produced in the
 resulting JSON object.
 
@@ -703,7 +709,8 @@ format_tail([], _, _, _, _) ->
 -doc """
 Format function for lists of key-value pairs as JSON objects.
 
-Accepts lists with atom, binary, integer, or float keys.
+Accepts key-value lists with atom, binary, integer, or float keys.
+The keys are encoded as JSON object names.
 """.
 -doc(#{since => <<"OTP 27.2">>}).
 
@@ -723,7 +730,8 @@ format_key_value_list(KVList, UserEnc, #{level := Level} = State) ->
 -doc """
 Format function for lists of key-value pairs as JSON objects.
 
-Accepts lists with atom, binary, integer, or float keys.
+Accepts key-value lists with atom, binary, integer, or float keys.
+The keys are encoded as JSON object names.
 Verifies that no duplicate keys will be produced in the
 resulting JSON object.
 
