@@ -115,7 +115,7 @@ Simple JSON value encodeable with `json:encode/1`.
     | list(encode_value())
     | encode_map(encode_value()).
 
--type encode_map(Value) :: #{binary() | atom() | integer() => Value}.
+-type encode_map(Value) :: #{binary() | atom() | integer() | float() => Value}.
 
 -doc """
 Generates JSON corresponding to `Term`.
@@ -133,6 +133,7 @@ Supports basic data mapping:
 | `#{binary() => _}`     | Object   |
 | `#{atom() => _}`       | Object   |
 | `#{integer() => _}`    | Object   |
+| `#{float() => _}`      | Object   |
 
 This is equivalent to `encode(Term, fun json:encode_value/2)`.
 
