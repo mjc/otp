@@ -54,6 +54,8 @@
          typed_nonpositive_small_gt_first/2,
          typed_small_number_lt_first/2,typed_small_number_gt_first/2,
          typed_number_small_lt_first/2,typed_number_small_gt_first/2,
+         typed_small_any_lt_first/2,typed_small_any_gt_first/2,
+         typed_any_small_lt_first/2,typed_any_small_gt_first/2,
          typed_float_integer_lt_first/2,typed_float_integer_gt_first/2,
          typed_integer_float_lt_first/2,typed_integer_float_gt_first/2,
          typed_small_integer_long_lt_first/3,
@@ -1786,6 +1788,22 @@ typed_comparison_ladders(_Config) ->
                                         end, NumberValues)
                   end, SmallNumbers),
 
+    Terms = comparison_terms(),
+    lists:foreach(fun(Small) ->
+                          lists:foreach(fun(Term) ->
+                                                Expected = oracle_compare(Small, Term),
+                                                Expected = typed_small_any_lt_first(Small,
+                                                                                    Term),
+                                                Expected = typed_small_any_gt_first(Small,
+                                                                                    Term),
+                                                Reverse = oracle_compare(Term, Small),
+                                                Reverse = typed_any_small_lt_first(Term,
+                                                                                   Small),
+                                                Reverse = typed_any_small_gt_first(Term,
+                                                                                   Small)
+                                        end, Terms)
+                  end, SmallValues),
+
     BigFloat = float(1 bsl 80),
     FloatIntegerPairs = [{Float, Integer} ||
                             Float <- [-BigFloat, -9007199254740992.0,
@@ -2051,6 +2069,22 @@ typed_small_number_gt_first(Small, Number)
   when is_integer(Small), Small >= -16, Small =< 16, is_number(Number) ->
     if Small > Number -> gt; Small < Number -> lt; true -> eq end.
 
+typed_small_any_lt_first(Small, Any)
+  when is_integer(Small), Small >= -16, Small =< 16 ->
+    if Small < Any -> lt; Small > Any -> gt; true -> eq end.
+
+typed_small_any_gt_first(Small, Any)
+  when is_integer(Small), Small >= -16, Small =< 16 ->
+    if Small > Any -> gt; Small < Any -> lt; true -> eq end.
+
+typed_any_small_lt_first(Any, Small)
+  when is_integer(Small), Small >= -16, Small =< 16 ->
+    if Any < Small -> lt; Any > Small -> gt; true -> eq end.
+
+typed_any_small_gt_first(Any, Small)
+  when is_integer(Small), Small >= -16, Small =< 16 ->
+    if Any > Small -> gt; Any < Small -> lt; true -> eq end.
+
 typed_number_small_lt_first(Number, Small)
   when is_number(Number), is_integer(Small), Small >= -16, Small =< 16 ->
     if Number < Small -> lt; Number > Small -> gt; true -> eq end.
@@ -2217,6 +2251,10 @@ assert_comparison_ladder_asm() ->
                         typed_nonpositive_small_gt_first,
                         typed_small_number_lt_first,
                         typed_small_number_gt_first,
+                        typed_small_any_lt_first,
+                        typed_small_any_gt_first,
+                        typed_any_small_lt_first,
+                        typed_any_small_gt_first,
                         typed_number_small_lt_first,
                         typed_number_small_gt_first,
                         typed_float_integer_lt_first,
@@ -2241,6 +2279,16 @@ assert_comparison_ladder_asm() ->
                         typed_small_number_gt_first,
                         typed_number_small_lt_first,
                         typed_number_small_gt_first]),
+    lists:foreach(fun(Name) ->
+                          {function,Name,2,_,Instructions} =
+                              lists:keyfind(Name, 2, Functions),
+                          true = has_guard_test(is_integer, Instructions),
+                          true = has_guard_bound(-16, Instructions),
+                          true = has_guard_bound(16, Instructions)
+                  end, [typed_small_any_lt_first,
+                        typed_small_any_gt_first,
+                        typed_any_small_lt_first,
+                        typed_any_small_gt_first]),
     lists:foreach(fun(Name) ->
                           {function,Name,3,_,Instructions} =
                               lists:keyfind(Name, 2, Functions),
