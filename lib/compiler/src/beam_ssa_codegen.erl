@@ -219,12 +219,137 @@ cg_fun(Blocks, Args, NoBsMatch, St0) ->
     Linear4 = defined(Linear3, St2),
     Linear5 = opt_allocate(Linear4, St2),
     Linear6 = fix_wait_timeout(Linear5),
-    Linear = add_debug_info(Linear6, Args, St2),
+    Linear7 = add_debug_info(Linear6, Args, St2),
+    Linear = layout_comparison_ladders(Linear7, St2),
     {Asm,St} = cg_linear(Linear, St2),
     case NoBsMatch of
         true -> {Asm,St};
         false -> {bs_translate(Asm),St}
     end.
+
+%% Put the second comparison in a two-test ordering ladder directly after
+%% the first one. Inverting both tests lets the branch instructions fall
+%% through from one test to the next while preserving the original CFG.
+layout_comparison_ladders(Linear, St) ->
+    Preds = layout_predecessors(Linear),
+    Positions = maps:from_list(lists:zip([L || {L,_} <- Linear],
+                                         lists:seq(1, length(Linear)))),
+    Blocks = maps:from_list(Linear),
+    layout_comparison_ladders_1(Linear, Preds, Positions, Blocks, #{}, St).
+
+layout_predecessors(Linear) ->
+    foldl(fun({_,#cg_blk{last=Last}}, Preds0) ->
+                  foldl(fun(Succ, Preds) ->
+                                maps:update_with(Succ, fun(N) -> N + 1 end,
+                                                 1, Preds)
+                        end, Preds0, successors(Last))
+          end, #{}, Linear).
+
+layout_comparison_ladders_1([{L0,#cg_blk{is=Is0,
+                                         last=#cg_br{bool=Bool0,
+                                                     succ=LT,fail=L1}=Br0}=Blk0}
+                              | Bs0], Preds, Positions, Blocks, Moved, St) ->
+    case maps:is_key(L0, Moved) of
+        true ->
+            layout_comparison_ladders_1(Bs0, Preds, Positions, Blocks,
+                                         Moved, St);
+        false ->
+            layout_comparison_ladder_block(L0, Is0, Bool0, LT, L1, Br0, Blk0,
+                                           Bs0, Preds, Positions, Blocks,
+                                           Moved, St)
+    end;
+layout_comparison_ladders_1([], _Preds, _Positions, _Blocks, _Moved, _St) ->
+    [];
+layout_comparison_ladders_1([{L,Blk}|Bs], Preds, Positions, Blocks, Moved, St) ->
+    [{L,Blk}|layout_comparison_ladders_1(Bs, Preds, Positions, Blocks,
+                                         Moved, St)].
+
+layout_comparison_ladder_block(L0, Is0, Bool0, LT, L1, Br0, Blk0, Bs0,
+                                Preds, Positions, Blocks, Moved, St) ->
+    case comparison_ladder_first(Is0, Bool0, L1, LT, L0, St) of
+        {ok,Prefix,Set0,Op0,Args} ->
+            case {maps:get(L1, Preds, 0) =:= 1,
+                  maps:get(L1, Positions, 0) > maps:get(L0, Positions, 0),
+                  maps:get(L1, Blocks, none)} of
+                {true,true,#cg_blk{}=Blk1} ->
+                    case comparison_ladder_second(Blk1) of
+                        {ok,Prefix1,Set1,Op1,Args1,Bool1,Br1,GT,EQ} ->
+                            IsComplementary =
+                                (Op0 =:= {bif,'<'} andalso Op1 =:= {bif,'>'}) orelse
+                                (Op0 =:= {bif,'>'} andalso Op1 =:= {bif,'<'}),
+                            IsDistinct = L0 =/= L1 andalso
+                                L0 =/= LT andalso L0 =/= GT andalso L0 =/= EQ andalso
+                                L1 =/= LT andalso L1 =/= GT andalso L1 =/= EQ andalso
+                                LT =/= GT andalso LT =/= EQ andalso GT =/= EQ,
+                            case {IsComplementary, IsDistinct,
+                                  Args1 =:= Args, beam_arg(Bool1, St)} of
+                                {true,true,true,{z,_}} ->
+                                    Inverted0 = invert_comparison(Op0),
+                                    Inverted1 = invert_comparison(Op1),
+                                    Blk0a = Blk0#cg_blk{
+                                              is=Prefix ++
+                                                  [Set0#cg_set{op=Inverted0}],
+                                              last=Br0#cg_br{succ=L1,fail=LT}},
+                                    Blk1a = Blk1#cg_blk{
+                                              is=Prefix1 ++
+                                                  [Set1#cg_set{op=Inverted1}],
+                                              last=Br1#cg_br{succ=EQ,fail=GT}},
+                                    [{L0,Blk0a},{L1,Blk1a} |
+                                     layout_comparison_ladders_1(
+                                       Bs0, Preds, Positions, Blocks,
+                                       Moved#{L1=>true}, St)];
+                                _ ->
+                                    [{L0,Blk0}|
+                                     layout_comparison_ladders_1(
+                                       Bs0, Preds, Positions, Blocks, Moved, St)]
+                            end;
+                        no ->
+                            [{L0,Blk0}|layout_comparison_ladders_1(
+                                         Bs0, Preds, Positions, Blocks,
+                                         Moved, St)]
+                    end;
+                _ ->
+                    [{L0,Blk0}|layout_comparison_ladders_1(
+                                 Bs0, Preds, Positions, Blocks, Moved, St)]
+            end;
+        no ->
+            [{L0,Blk0}|layout_comparison_ladders_1(
+                         Bs0, Preds, Positions, Blocks, Moved, St)]
+    end.
+
+comparison_ladder_first(Is, Bool, L1, LT, L0, St) ->
+    case reverse(Is) of
+        [#cg_set{op=Op,dst=Bool,args=[#b_var{}=A,#b_var{}=B]}=Set|RevPrefix]
+          when A =/= B, L0 =/= L1, L1 =/= LT ->
+            case beam_arg(Bool, St) of
+                {z,_} when Op =:= {bif,'<'}; Op =:= {bif,'>'} ->
+                    {ok,reverse(RevPrefix),Set,Op,[A,B]};
+                _ -> no
+            end;
+        _ ->
+            no
+    end.
+
+comparison_ladder_second(#cg_blk{is=Is,
+                                 last=#cg_br{bool=Bool,succ=GT,fail=EQ}=Br}) ->
+    case reverse(Is) of
+        [#cg_set{op=Op,dst=Bool,args=[#b_var{}=A,#b_var{}=B]}=Set|PrefixRev]
+          when A =/= B, GT =/= EQ ->
+            case lists:all(fun(#cg_alloc{stack=none,
+                                         words=#need{h=0,l=0,f=0,nr=0}}) -> true;
+                              (_) -> false
+                           end, PrefixRev) of
+                true -> {ok,reverse(PrefixRev),Set,Op,[A,B],Bool,Br,GT,EQ};
+                false -> no
+            end;
+        _ ->
+            no
+    end;
+comparison_ladder_second(_) ->
+    no.
+
+invert_comparison({bif,'<'}) -> {bif,'>='};
+invert_comparison({bif,'>'}) -> {bif,'=<'}.
 
 %% collect_catch_labels(Linear, St) -> St.
 %%  Collect all catch labels (labels for blocks that begin

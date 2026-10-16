@@ -2896,6 +2896,49 @@ void BeamModuleAssembler::emit_is_ge_ge(ArgLabel const &Fail1,
     });
 }
 
+void BeamModuleAssembler::emit_i_compare(ArgLabel const &FailGT,
+                                        ArgLabel const &Equal,
+                                        ArgSource const &A,
+                                        ArgSource const &B) {
+    if (always_small(A) && always_small(B)) {
+        mov_arg(ARG2, B); /* May clobber ARG1 */
+        mov_arg(ARG1, A);
+        preserve_cache([&]() {
+            a.cmp(ARG1, ARG2);
+            a.jg(resolve_beam_label(FailGT));
+            a.je(resolve_beam_label(Equal));
+        });
+        return;
+    }
+
+    Label generic = a.new_label(), lt_done = a.new_label();
+
+    mov_arg(ARG2, B); /* May clobber ARG1 */
+    mov_arg(ARG1, A);
+
+    /* Avoid the shared comparison for identical terms. */
+    a.cmp(ARG1, ARG2);
+    a.je(resolve_beam_label(Equal));
+
+    /* Keep the common small-integer case on the inline path. */
+    a.mov(RETd, ARG1d);
+    a.and_(RETd, ARG2d);
+    a.and_(RETb, imm(_TAG_IMMED1_MASK));
+    a.cmp(RETb, imm(_TAG_IMMED1_SMALL));
+    a.short_().jne(generic);
+
+    a.cmp(ARG1, ARG2);
+    a.jg(resolve_beam_label(FailGT));
+    a.short_().jmp(lt_done);
+
+    a.bind(generic);
+    safe_fragment_call(ga->get_arith_compare_shared());
+    a.jg(resolve_beam_label(FailGT));
+    a.je(resolve_beam_label(Equal));
+
+    a.bind(lt_done);
+}
+
 /*
  * Combine is_integer with range check.
  *

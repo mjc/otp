@@ -2784,6 +2784,47 @@ void BeamModuleAssembler::emit_is_ge_ge(ArgLabel const &Fail1,
             TMP1);
 }
 
+void BeamModuleAssembler::emit_i_compare(ArgLabel const &FailGT,
+                                        ArgLabel const &Equal,
+                                        ArgSource const &A,
+                                        ArgSource const &B) {
+    Label generic = a.new_label(), lt_done = a.new_label();
+    auto [lhs, rhs] = load_sources(A, ARG1, B, ARG2);
+
+    if (always_small(A) && always_small(B)) {
+        preserve_cache([&]() {
+            a.cmp(lhs.reg, rhs.reg);
+            a.b_gt(resolve_beam_label(FailGT, disp1MB));
+            a.b_eq(resolve_beam_label(Equal, disp1MB));
+        });
+        return;
+    }
+
+    /* Avoid the shared comparison for identical terms. */
+    a.cmp(lhs.reg, rhs.reg);
+    a.b_eq(resolve_beam_label(Equal, disp1MB));
+
+    /* Keep the common small-integer case on the inline path. */
+    ERTS_CT_ASSERT(_TAG_IMMED1_SMALL == _TAG_IMMED1_MASK);
+    a.and_(TMP1, lhs.reg, rhs.reg);
+    a.and_(TMP1, TMP1, imm(_TAG_IMMED1_MASK));
+    a.cmp(TMP1, imm(_TAG_IMMED1_SMALL));
+    a.b_ne(generic);
+
+    a.cmp(lhs.reg, rhs.reg);
+    a.b_gt(resolve_beam_label(FailGT, disp1MB));
+    a.b(lt_done);
+
+    a.bind(generic);
+    mov_var(ARG2, rhs);
+    mov_var(ARG1, lhs);
+    fragment_call(ga->get_arith_compare_shared());
+    a.b_gt(resolve_beam_label(FailGT, disp1MB));
+    a.b_eq(resolve_beam_label(Equal, disp1MB));
+
+    a.bind(lt_done);
+}
+
 /*
  * 60 occurrences in OTP at the time of writing. Seems to be common in
  * Elixir code.

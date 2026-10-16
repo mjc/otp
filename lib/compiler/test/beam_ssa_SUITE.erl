@@ -31,7 +31,10 @@
          mapfoldl/0,mapfoldl/1,
          grab_bag/1,redundant_br/1,
          coverage/1,normalize/1,
-         trycatch/1,gh_6599/1,cs_div/1,gh_11494/1]).
+         trycatch/1,gh_6599/1,cs_div/1,gh_11494/1,
+         comparison_ladder/1]).
+-export([lt_gt/2,gt_lt/2,strict_ladder/2,lt_gt_keep/2,
+         changed_operand_ladder/3,call_ladder/2]).
 
 -import_record(beam_ssa, [b_set, b_var, b_literal]).
 
@@ -59,7 +62,8 @@ groups() ->
        trycatch,
        gh_6599,
        cs_div,
-       gh_11494
+       gh_11494,
+       comparison_ladder
       ]}].
 
 init_per_suite(Config) ->
@@ -1587,6 +1591,121 @@ inspect(Value) ->
                  is_bitstring(Res) -> Res;
         [Num] -> inspect(Num)
     end.
+
+comparison_ladder(_Config) ->
+    assert_comparison_ladder_asm(),
+
+    lt = lt_gt(id(1), id(2)),
+    gt = lt_gt(id(2), id(1)),
+    eq = lt_gt(id(1), id(1)),
+    eq = lt_gt(id(1), id(1.0)),
+    eq = lt_gt(id({1}), id({1.0})),
+    eq = lt_gt(id([1]), id([1.0])),
+
+    lt = gt_lt(id(1), id(2)),
+    gt = gt_lt(id(2), id(1)),
+    eq = gt_lt(id(1), id(1.0)),
+
+    ?assertError(if_clause, strict_ladder(1, 1.0)),
+    ?assertError(if_clause, strict_ladder(-0.0, 0.0)),
+    true = lt_gt(#{1 => value}, #{1.0 => value}) =/= eq,
+
+    {true,lt} = lt_gt_keep(id(1), id(2)),
+    {false,gt} = lt_gt_keep(id(2), id(1)),
+    {false,eq} = lt_gt_keep(id(1), id(1.0)),
+    receive {comparison_ladder_bool,true} -> ok end,
+    receive {comparison_ladder_bool,false} -> ok end,
+    receive {comparison_ladder_bool,false} -> ok end,
+    lt = changed_operand_ladder(id(1), id(2), id(3)),
+    eq = changed_operand_ladder(id(2), id(1), id(3)),
+    gt = changed_operand_ladder(id(2), id(1), id(1)),
+    lt = call_ladder(id(1), id(2)),
+    gt = call_ladder(id(2), id(1)),
+    eq = call_ladder(id(1), id(1.0)),
+    receive comparison_ladder_call -> ok after 0 -> error(missing_call) end,
+    receive comparison_ladder_call -> ok after 0 -> error(missing_call) end,
+
+    greater = comparison_receive(),
+    receive {sample,1,1.0} -> ok after 0 -> error(skipped_message_missing) end,
+    ok.
+
+lt_gt(A, B) ->
+    if
+        A < B -> lt;
+        A > B -> gt;
+        true -> eq
+    end.
+
+gt_lt(A, B) ->
+    if
+        A > B -> gt;
+        A < B -> lt;
+        true -> eq
+    end.
+
+strict_ladder(A, B) ->
+    if
+        A < B -> lt;
+        A > B -> gt;
+        A =:= B -> exact
+    end.
+
+lt_gt_keep(A, B) ->
+    Less = A < B,
+    Tag = case Less of
+              true -> lt;
+              false ->
+                  case A > B of
+                      true -> gt;
+                      false -> eq
+                  end
+          end,
+    self() ! {comparison_ladder_bool,Less},
+    {Less,Tag}.
+
+changed_operand_ladder(A, B, C) ->
+    if
+        A < B -> lt;
+        A > C -> gt;
+        true -> eq
+    end.
+
+call_ladder(A, B) ->
+    case A < B of
+        true -> lt;
+        false ->
+            self() ! comparison_ladder_call,
+            if A > B -> gt; true -> eq end
+    end.
+
+comparison_receive() ->
+    self() ! {sample,1,1.0},
+    self() ! {sample,2,1},
+    receive
+        {sample,A,B} when A < B -> less;
+        {sample,A,B} when A > B -> greater
+    after 1000 ->
+        timeout
+    end.
+
+assert_comparison_ladder_asm() ->
+    {beam_file,?MODULE,_,_,_,Functions} = beam_disasm:file(code:which(?MODULE)),
+    lists:foreach(fun(Name) ->
+                          {function,Name,2,_,Instructions} =
+                              lists:keyfind(Name, 2, Functions),
+                          true = has_adjacent_ge_tests(Instructions)
+                  end, [lt_gt,gt_lt]).
+
+has_adjacent_ge_tests([{test,is_ge,{f,LT},[A,B]},
+                       {test,is_ge,{f,GT},[B,A]},
+                       {jump,{f,EQ}},
+                       {label,LT}|_])
+  when LT =/= GT, LT =/= EQ, GT =/= EQ ->
+    true;
+has_adjacent_ge_tests([_|Instructions]) ->
+    has_adjacent_ge_tests(Instructions);
+has_adjacent_ge_tests([]) ->
+    false.
 
 %% The identity function.
 id(I) -> I.

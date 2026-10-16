@@ -26,7 +26,9 @@
          init_per_suite/1, end_per_suite/1,
          init_per_group/2, end_per_group/2,
          init_per_testcase/2, end_per_testcase/2]).
--export([annotate/1, jmsingle/1, named_labels/1, symbols/1, perfdirectory_set/1, perfdirectory_not_set/1]).
+-export([annotate/1, jmsingle/1, named_labels/1, ordering_comparison/1,
+         ordering_comparison_near_match/1,
+         symbols/1, perfdirectory_set/1, perfdirectory_not_set/1]).
 
 suite() ->
     [{timetrap, {minutes, 4}}].
@@ -35,7 +37,8 @@ groups() ->
     [{perf, [symbols, annotate, perfdirectory_set, perfdirectory_not_set]}].
 
 all() ->
-    [{group, perf}, jmsingle, named_labels].
+    [{group, perf}, jmsingle, named_labels, ordering_comparison,
+     ordering_comparison_near_match].
 
 init_per_suite(Config) ->
     case erlang:system_info(emu_flavor) of
@@ -286,6 +289,51 @@ named_labels(_Config) ->
         _ ->
             ct:fail("No labels found in assembly dump")
     end.
+
+ordering_comparison(Config) ->
+    DataDir = proplists:get_value(data_dir, Config),
+    Mod = ?FUNCTION_NAME,
+    File = filename:join(DataDir, "ordering_comparison"),
+    {ok,Mod,Code} = compile:file(File, [from_asm,no_postopt,binary]),
+    {module,Mod} = code:load_binary(Mod, File, Code),
+
+    try
+        One = {ordering,1},
+        OneFloat = {ordering,1.0},
+        One = Mod:run(One, padding, OneFloat),
+        OneFloat = Mod:run(OneFloat, padding, One),
+
+        EqualA = {ordering,[a,b]},
+        EqualB = binary_to_term(term_to_binary(EqualA)),
+        EqualA = Mod:run(EqualA, padding, EqualB),
+
+        less = Mod:run({ordering,1}, padding, {ordering,2}),
+        greater = Mod:run({ordering,2}, padding, {ordering,1})
+    after
+        true = code:delete(Mod),
+        false = code:purge(Mod)
+    end,
+
+    ok.
+
+ordering_comparison_near_match(Config) ->
+    DataDir = proplists:get_value(data_dir, Config),
+    Mod = ordering_comparison,
+    File = filename:join(DataDir, "ordering_comparison"),
+    {ok,Mod,Code} = compile:file(File, [from_asm,no_postopt,binary]),
+    {module,Mod} = code:load_binary(Mod, File, Code),
+
+    try
+        less = Mod:near_match({ordering,1}, padding, {ordering,2}),
+        equal = Mod:near_match({ordering,1}, padding, {ordering,1.0}),
+        greater = Mod:near_match({ordering,2}, padding, {ordering,1}),
+        unexpected = Mod:near_match({ordering,1}, not_padding, {ordering,2})
+    after
+        true = code:delete(Mod),
+        false = code:purge(Mod)
+    end,
+
+    ok.
 
 perfdirectory_set(_Config) ->
     %% Confirm that when +JPperfdirectory is set, the jit/perf files

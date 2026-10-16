@@ -1628,6 +1628,7 @@ i_update_record_in_place_done
 # Native records (introduced in OTP 29).
 #
 
+%unused pred.same_label
 %unused gen.get_local_record_elements
 %unused gen.update_local_record
 
