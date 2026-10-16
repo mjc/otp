@@ -2970,7 +2970,8 @@ void BeamModuleAssembler::emit_i_compare(ArgLabel const &FailGT,
         return;
     }
 
-    Label generic = a.new_label(), lt_done = a.new_label();
+    Label generic = a.new_label(), small = a.new_label(),
+          lt_done = a.new_label();
 
     mov_arg(ARG2, B); /* May clobber ARG1 */
     mov_arg(ARG1, A);
@@ -3006,10 +3007,12 @@ void BeamModuleAssembler::emit_i_compare(ArgLabel const &FailGT,
         return;
     }
 
-    if ((always_small(A) &&
-         always_one_of<BeamTypeId::Integer, BeamTypeId::AlwaysBoxed>(B)) ||
-        (always_small(B) &&
-         always_one_of<BeamTypeId::Integer, BeamTypeId::AlwaysBoxed>(A))) {
+    const bool small_boxed =
+            (always_small(A) &&
+             always_one_of<BeamTypeId::Integer, BeamTypeId::AlwaysBoxed>(B)) ||
+            (always_small(B) &&
+             always_one_of<BeamTypeId::Integer, BeamTypeId::AlwaysBoxed>(A));
+    if (small_boxed) {
         /* Only small integers can be immediate for these operands. */
         emit_is_not_boxed(generic, always_small(A) ? ARG2 : ARG1, dShort);
         preserve_cache([&]() {
@@ -3029,17 +3032,20 @@ void BeamModuleAssembler::emit_i_compare(ArgLabel const &FailGT,
         }
         a.and_(RETb, imm(_TAG_IMMED1_MASK));
         a.cmp(RETb, imm(_TAG_IMMED1_SMALL));
-        a.short_().jne(generic);
-
-        a.cmp(ARG1, ARG2);
-        a.jg(resolve_beam_label(FailGT));
-        a.short_().jmp(lt_done);
+        a.je(small);
     }
 
     a.bind(generic);
     safe_fragment_call(ga->get_arith_compare_shared());
     a.jg(resolve_beam_label(FailGT));
     a.je(resolve_beam_label(Equal));
+    if (!small_boxed) {
+        a.short_().jmp(lt_done);
+
+        a.bind(small);
+        a.cmp(ARG1, ARG2);
+        a.jg(resolve_beam_label(FailGT));
+    }
 
     a.bind(lt_done);
 }
