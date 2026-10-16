@@ -38,6 +38,7 @@
          comparison_ladder/1,comparison_pair_matrix/1,
          typed_comparison_ladders/1,comparison_non_ladder_shapes/1]).
 -export([lt_gt/2,gt_lt/2,strict_ladder/2,lt_gt_keep/2,
+         arithmetic_eq_ladder/2,arithmetic_eq_lt_ladder/2,
          swapped_ladder/2,changed_operand_ladder/3,call_ladder/2,
          oracle_lt/2,oracle_gt/2,
          typed_small_integer/2,typed_float/2,
@@ -1636,6 +1637,15 @@ comparison_ladder(_Config) ->
     gt = gt_lt(id(2), id(1)),
     eq = gt_lt(id(1), id(1.0)),
 
+    gt = arithmetic_eq_ladder(id(2), id(1)),
+    lt = arithmetic_eq_ladder(id(1), id(2)),
+    eq = arithmetic_eq_ladder(id(1), id(1.0)),
+    eq = arithmetic_eq_ladder(id(-0.0), id(0.0)),
+    lt = arithmetic_eq_ladder(#{1 => value}, #{1.0 => value}),
+    lt = arithmetic_eq_lt_ladder(id(1), id(2)),
+    eq = arithmetic_eq_lt_ladder(id(1), id(1.0)),
+    gt = arithmetic_eq_lt_ladder(id(2), id(1)),
+
     ?assertError(if_clause, strict_ladder(1, 1.0)),
     ?assertError(if_clause, strict_ladder(-0.0, 0.0)),
     true = lt_gt(#{1 => value}, #{1.0 => value}) =/= eq,
@@ -1666,6 +1676,8 @@ comparison_pair_matrix(_Config) ->
                                                 Expected = oracle_compare(A, B),
                                                 Expected = lt_gt(A, B),
                                                 Expected = gt_lt(A, B),
+                                                Expected = arithmetic_eq_ladder(A, B),
+                                                Expected = arithmetic_eq_lt_ladder(A, B),
                                                 Expected = swapped_ladder(A, B),
                                                 check_strict_ladder(A, B, Expected)
                                         end, Terms)
@@ -2169,6 +2181,20 @@ lt_gt(A, B) ->
         true -> eq
     end.
 
+arithmetic_eq_ladder(A, B) ->
+    if
+        A > B -> gt;
+        A == B -> eq;
+        true -> lt
+    end.
+
+arithmetic_eq_lt_ladder(A, B) ->
+    if
+        A < B -> lt;
+        A == B -> eq;
+        true -> gt
+    end.
+
 gt_lt(A, B) ->
     if
         A > B -> gt;
@@ -2234,7 +2260,8 @@ assert_comparison_ladder_asm() ->
                           {function,Name,2,_,Instructions} =
                               lists:keyfind(Name, 2, Functions),
                           true = has_adjacent_ge_tests(Instructions)
-                  end, [lt_gt,gt_lt,swapped_ladder,
+                  end, [lt_gt,gt_lt,swapped_ladder,arithmetic_eq_ladder,
+                        arithmetic_eq_lt_ladder,
                         typed_small_integer,typed_float,
                         typed_small_integer_64_range,
                         typed_small_integer_lt_first,

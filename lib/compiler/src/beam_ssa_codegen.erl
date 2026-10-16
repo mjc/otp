@@ -274,9 +274,13 @@ layout_comparison_ladder_block(L0, Is0, Bool0, LT, L1, Br0, Blk0, Bs0,
                 {true,true,#cg_blk{}=Blk1} ->
                     case comparison_ladder_second(Blk1) of
                         {ok,Prefix1,Set1,Op1,Args1,Bool1,Br1,GT,EQ} ->
+                            {OrderedOp1,OrderedGT,OrderedEQ} =
+                                comparison_ladder_second(Op0, Op1, GT, EQ),
                             IsComplementary =
-                                (Op0 =:= {bif,'<'} andalso Op1 =:= {bif,'>'}) orelse
-                                (Op0 =:= {bif,'>'} andalso Op1 =:= {bif,'<'}),
+                                (Op0 =:= {bif,'<'} andalso
+                                 OrderedOp1 =:= {bif,'>'}) orelse
+                                (Op0 =:= {bif,'>'} andalso
+                                 OrderedOp1 =:= {bif,'<'}),
                             IsDistinct = L0 =/= L1 andalso
                                 L0 =/= LT andalso L0 =/= GT andalso L0 =/= EQ andalso
                                 L1 =/= LT andalso L1 =/= GT andalso L1 =/= EQ andalso
@@ -285,7 +289,7 @@ layout_comparison_ladder_block(L0, Is0, Bool0, LT, L1, Br0, Blk0, Bs0,
                                   Args1 =:= Args, beam_arg(Bool1, St)} of
                                 {true,true,true,{z,_}} ->
                                     Inverted0 = invert_comparison(Op0),
-                                    Inverted1 = invert_comparison(Op1),
+                                    Inverted1 = invert_comparison(OrderedOp1),
                                     Blk0a = Blk0#cg_blk{
                                               is=Prefix ++
                                                   [Set0#cg_set{op=Inverted0}],
@@ -293,7 +297,8 @@ layout_comparison_ladder_block(L0, Is0, Bool0, LT, L1, Br0, Blk0, Bs0,
                                     Blk1a = Blk1#cg_blk{
                                               is=Prefix1 ++
                                                   [Set1#cg_set{op=Inverted1}],
-                                              last=Br1#cg_br{succ=EQ,fail=GT}},
+                                              last=Br1#cg_br{succ=OrderedEQ,
+                                                             fail=OrderedGT}},
                                     [{L0,Blk0a},{L1,Blk1a} |
                                      layout_comparison_ladders_1(
                                        Bs0, Preds, Positions, Blocks,
@@ -316,6 +321,16 @@ layout_comparison_ladder_block(L0, Is0, Bool0, LT, L1, Br0, Blk0, Bs0,
             [{L0,Blk0}|layout_comparison_ladders_1(
                          Bs0, Preds, Positions, Blocks, Moved, St)]
     end.
+
+comparison_ladder_second({bif,'<'}, {bif,'=='}, GT, EQ) ->
+    %% On the first test's false edge, rewrite equality as the opposite
+    %% ordering test and swap its outcomes before inverting the branch.
+    {{bif,'>'},EQ,GT};
+comparison_ladder_second({bif,'>'}, {bif,'=='}, GT, EQ) ->
+    %% The first test's false edge similarly restricts equality to A =< B.
+    {{bif,'<'},EQ,GT};
+comparison_ladder_second(_Op0, Op1, GT, EQ) ->
+    {Op1,GT,EQ}.
 
 comparison_ladder_first(Is, Bool, L1, LT, L0, St) ->
     case reverse(Is) of
