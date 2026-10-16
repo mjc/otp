@@ -2263,16 +2263,11 @@ void BeamGlobalAssembler::emit_arith_compare_shared() {
     a.short_().jne(atom_compare);
 
     x86::Gp boxed_ptr = emit_ptr_val(ARG3, ARG1);
-    a.mov(ARG3, emit_boxed_val(boxed_ptr));
-    boxed_ptr = emit_ptr_val(ARG5, ARG2);
-    a.mov(ARG5, emit_boxed_val(boxed_ptr));
-    a.and_(ARG3d, imm(_TAG_HEADER_MASK));
-    a.and_(ARG5d, imm(_TAG_HEADER_MASK));
-    a.sub(ARG3d, imm(_TAG_HEADER_FLOAT));
-    a.sub(ARG5d, imm(_TAG_HEADER_FLOAT));
-    a.or_(ARG3d, ARG5d);
+    a.cmp(emit_boxed_val(boxed_ptr), imm(HEADER_FLONUM));
+    a.jne(generic_compare);
 
-    /* NOTE: Short won't reach if JIT_HARD_DEBUG is defined. */
+    boxed_ptr = emit_ptr_val(ARG5, ARG2);
+    a.cmp(emit_boxed_val(boxed_ptr), imm(HEADER_FLONUM));
     a.jne(generic_compare);
 
     boxed_ptr = emit_ptr_val(ARG1, ARG1);
