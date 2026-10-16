@@ -2784,6 +2784,148 @@ void BeamModuleAssembler::emit_is_ge_ge(ArgLabel const &Fail1,
             TMP1);
 }
 
+void BeamModuleAssembler::emit_i_compare(ArgLabel const &FailGT,
+                                         ArgLabel const &Equal,
+                                         ArgSource const &A,
+                                         ArgSource const &B) {
+    Label generic = a.new_label(), lt_done = a.new_label();
+    auto [lhs, rhs] = load_sources(A, ARG1, B, ARG2);
+
+    if (always_small(A) && always_small(B)) {
+        preserve_cache([&]() {
+            a.cmp(lhs.reg, rhs.reg);
+            a.b_gt(resolve_beam_label(FailGT, disp1MB));
+            a.b_eq(resolve_beam_label(Equal, disp1MB));
+        });
+        return;
+    }
+
+    if ((always_small(A) && exact_type<BeamTypeId::Integer>(B)) ||
+        (exact_type<BeamTypeId::Integer>(A) && always_small(B))) {
+        Label small = a.new_label(), done = a.new_label();
+        a64::Gp boxed_ptr;
+
+        if (always_small(A)) {
+            comment("simplified small-integer comparison against known "
+                    "integer");
+            if (hasLowerBound(B)) {
+                comment("bignum is positive, so small operand is less");
+                emit_is_not_boxed(done, rhs.reg);
+            } else if (hasUpperBound(B)) {
+                comment("bignum is negative, so small operand is greater");
+                emit_is_not_boxed(resolve_beam_label(FailGT, dispUnknown),
+                                  rhs.reg);
+            } else {
+                emit_is_boxed(small, rhs.reg);
+
+                boxed_ptr = emit_ptr_val(TMP1, rhs.reg);
+                const int bitNumber = 2;
+                const int bitValue = NEG_BIG_SUBTAG - POS_BIG_SUBTAG;
+                a.ldur(TMP1, emit_boxed_val(boxed_ptr));
+                ERTS_CT_ASSERT((1 << bitNumber) == bitValue);
+                a.tbnz(TMP1,
+                       imm(bitNumber),
+                       resolve_beam_label(FailGT, disp32K));
+                a.b(done);
+            }
+        } else {
+            comment("simplified known-integer comparison against small");
+            if (hasUpperBound(A)) {
+                comment("bignum is negative, so integer operand is less");
+                emit_is_not_boxed(done, lhs.reg);
+            } else if (hasLowerBound(A)) {
+                comment("bignum is positive, so integer operand is greater");
+                emit_is_not_boxed(resolve_beam_label(FailGT, dispUnknown),
+                                  lhs.reg);
+            } else {
+                emit_is_boxed(small, lhs.reg);
+
+                boxed_ptr = emit_ptr_val(TMP1, lhs.reg);
+                const int bitNumber = 2;
+                const int bitValue = NEG_BIG_SUBTAG - POS_BIG_SUBTAG;
+                a.ldur(TMP1, emit_boxed_val(boxed_ptr));
+                ERTS_CT_ASSERT((1 << bitNumber) == bitValue);
+                a.tbz(TMP1,
+                      imm(bitNumber),
+                      resolve_beam_label(FailGT, disp32K));
+                a.b(done);
+            }
+        }
+
+        a.bind(small);
+        a.cmp(lhs.reg, rhs.reg);
+        a.b_gt(resolve_beam_label(FailGT, disp1MB));
+        a.b_eq(resolve_beam_label(Equal, disp1MB));
+        a.bind(done);
+        return;
+    }
+
+    /* Avoid the shared comparison for identical terms. */
+    a.cmp(lhs.reg, rhs.reg);
+    a.b_eq(resolve_beam_label(Equal, disp1MB));
+
+    if (exact_type<BeamTypeId::Float>(A) && exact_type<BeamTypeId::Float>(B)) {
+        /* The shared helper would repeat the boxed/header checks for floats. */
+        a64::Gp boxed_ptr1 = emit_ptr_val(TMP1, lhs.reg);
+        a64::Gp boxed_ptr2 = emit_ptr_val(TMP2, rhs.reg);
+        a.ldur(a64::d0, emit_boxed_val(boxed_ptr1, sizeof(Eterm)));
+        a.ldur(a64::d1, emit_boxed_val(boxed_ptr2, sizeof(Eterm)));
+        a.fcmpe(a64::d0, a64::d1);
+        a.b_gt(resolve_beam_label(FailGT, disp1MB));
+        a.b_eq(resolve_beam_label(Equal, disp1MB));
+        return;
+    }
+
+    if (never_one_of<BeamTypeId::Integer>(A) ||
+        never_one_of<BeamTypeId::Integer>(B)) {
+        mov_var(ARG1, lhs);
+        mov_var(ARG2, rhs);
+        fragment_call(ga->get_arith_compare_shared());
+        a.b_gt(resolve_beam_label(FailGT, disp1MB));
+        a.b_eq(resolve_beam_label(Equal, disp1MB));
+        return;
+    }
+
+    if ((always_small(A) &&
+         always_one_of<BeamTypeId::Integer, BeamTypeId::AlwaysBoxed>(B)) ||
+        (always_small(B) &&
+         always_one_of<BeamTypeId::Integer, BeamTypeId::AlwaysBoxed>(A))) {
+        /* Only small integers can be immediate for these operands. */
+        emit_is_not_boxed(generic, always_small(A) ? rhs.reg : lhs.reg);
+        preserve_cache([&]() {
+            a.cmp(lhs.reg, rhs.reg);
+            a.b_gt(resolve_beam_label(FailGT, disp1MB));
+            a.b(lt_done);
+        });
+    } else {
+        /* Keep the common small-integer case on the inline path. */
+        ERTS_CT_ASSERT(_TAG_IMMED1_SMALL == _TAG_IMMED1_MASK);
+        if (always_small(A)) {
+            a.and_(TMP1, rhs.reg, imm(_TAG_IMMED1_MASK));
+        } else if (always_small(B)) {
+            a.and_(TMP1, lhs.reg, imm(_TAG_IMMED1_MASK));
+        } else {
+            a.and_(TMP1, lhs.reg, rhs.reg);
+            a.and_(TMP1, TMP1, imm(_TAG_IMMED1_MASK));
+        }
+        a.cmp(TMP1, imm(_TAG_IMMED1_SMALL));
+        a.b_ne(generic);
+
+        a.cmp(lhs.reg, rhs.reg);
+        a.b_gt(resolve_beam_label(FailGT, disp1MB));
+        a.b(lt_done);
+    }
+
+    a.bind(generic);
+    mov_var(ARG2, rhs);
+    mov_var(ARG1, lhs);
+    fragment_call(ga->get_arith_compare_shared());
+    a.b_gt(resolve_beam_label(FailGT, disp1MB));
+    a.b_eq(resolve_beam_label(Equal, disp1MB));
+
+    a.bind(lt_done);
+}
+
 /*
  * 60 occurrences in OTP at the time of writing. Seems to be common in
  * Elixir code.

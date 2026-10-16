@@ -1126,6 +1126,54 @@ is_ge(Fail, X, Y) {
     CMP_GE_ACTION($X, $Y, $FAIL($Fail));
 }
 
+i_compare(Greater, Equal, A, B) {
+    Eterm a = $A;
+    Eterm b = $B;
+
+    if (is_both_small(a, b)) {
+        Sint a_value = (Sint)a;
+        Sint b_value = (Sint)b;
+
+        if (a_value < b_value) {
+            /* Less-than falls through. */
+        } else if (a_value == b_value) {
+            $FAIL($Equal);
+        } else {
+            $FAIL($Greater);
+        }
+    } else if (a == b) {
+        $FAIL($Equal);
+    } else if (is_atom(a) && is_atom(b)) {
+        int cmp = erts_cmp_atoms(a, b);
+
+        if (cmp > 0) {
+            $FAIL($Greater);
+        } else if (cmp == 0) {
+            $FAIL($Equal);
+        }
+    } else if (is_float(a) && is_float(b)) {
+        FloatDef af, bf;
+        GET_DOUBLE(a, af);
+        GET_DOUBLE(b, bf);
+
+        if (af.fd < bf.fd) {
+            /* Less-than falls through. */
+        } else if (af.fd > bf.fd) {
+            $FAIL($Greater);
+        } else {
+            $FAIL($Equal);
+        }
+    } else {
+        Sint cmp = erts_cmp_compound(a, b, 0, 0);
+
+        if (cmp > 0) {
+            $FAIL($Greater);
+        } else if (cmp == 0) {
+            $FAIL($Equal);
+        }
+    }
+}
+
 is_lt_literal(Fail, X, Y) {
     CMP_LT_LITERAL_ACTION($X, $Y, $FAIL($Fail));
 }

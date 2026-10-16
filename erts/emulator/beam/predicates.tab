@@ -229,3 +229,13 @@ pred.equal(Val1, Val2) {
         return Val1.val == Val2.val;
     }
 }
+
+// Test whether two operands refer to the same label.
+pred.same_label(Label1, Label2) {
+    if ((Label1.type != TAG_f && Label1.type != TAG_u) ||
+        (Label2.type != TAG_f && Label2.type != TAG_u)) {
+        return 0;
+    }
+
+    return Label1.val == Label2.val;
+}

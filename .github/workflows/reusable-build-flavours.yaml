@@ -82,6 +82,9 @@ jobs:
                    echo 'Build type and flavor and test starting in source tree';
                    TYPE=$TYPE FLAVOR=$FLAVOR ./otp_build boot -a;
                    cerl -$TYPE -emu_flavor \$EMU_FLAVOR -noshell -s init stop;
+                   if [ '${TYPE}' = 'opt' ] && [ '${FLAVOR}' = 'emu' ]; then
+                       ERL_FLAGS='-emu_flavor emu +S 2:2' make emulator_test FLAVOR=emu ARGS='-suite jit_SUITE -case ordering_comparison ordering_comparison_near_match ordering_comparison_registers';
+                   fi;
 
                    echo 'Install and test installation';
                    sudo make install TYPE=$TYPE FLAVOR=$FLAVOR;

@@ -469,6 +469,12 @@ is_ge Fail1 N1=xy A=i | is_ge Fail2 N2=xy B=i | equal(N1, N2) =>
 
 is_ge_ge f f S c c
 
+is_ge LT=f A=xy B=xy | is_ge GT=f C=xy D=xy | jump EQ=f |
+  label Next | equal(A, D) | equal(B, C) | same_label(LT, Next) =>
+    i_compare GT EQ A B | label Next
+
+i_compare f f s s
+
 is_lt f s s
 is_ge f s s
 
