@@ -552,6 +552,15 @@ is_ge_literal f c x
 is_ge f s s
 %hot
 
+is_ge LT=f A=xy B=xy | is_ge GT=f C=xy D=xy | jump EQ=f |
+  label Next | equal(A, D) | equal(B, C) | same_label(LT, Next) =>
+    i_compare GT EQ A B | label Next
+
+i_compare f f x x
+%cold
+i_compare f f s s
+%hot
+
 is_eq Fail=f Const=c Reg=xy => is_eq Fail Reg Const
 is_eq Fail=f C1=c C2=c => move C1 x | is_eq Fail x C2
 is_eq f S s
@@ -1628,7 +1637,6 @@ i_update_record_in_place_done
 # Native records (introduced in OTP 29).
 #
 
-%unused pred.same_label
 %unused gen.get_local_record_elements
 %unused gen.update_local_record
 

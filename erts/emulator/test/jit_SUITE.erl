@@ -45,14 +45,26 @@ init_per_suite(Config) ->
     case erlang:system_info(emu_flavor) of
         jit ->
             Config;
+        emu ->
+            Config;
         _ ->
-            {skip, "No point in running JIT tests on non-JIT emulator"}
+            {skip, "Tests require the JIT or interpreter emulator"}
     end.
 
 end_per_suite(_Config) ->
     ok.
 
 init_per_group(perf, Config) ->
+    case erlang:system_info(emu_flavor) of
+        jit ->
+            init_performance_group(Config);
+        _ ->
+            {skip, "Performance tests require the JIT emulator"}
+    end;
+init_per_group(_, Config) ->
+    Config.
+
+init_performance_group(Config) ->
     case os:find_executable("perf") of
         false ->
             {skip, "perf not found"};
@@ -89,9 +101,7 @@ init_per_group(perf, Config) ->
                 _ ->
                     {skip,"unknown old perf version: " ++ PerfVsn}
             end
-    end;
-init_per_group(_, Config) ->
-    Config.
+    end.
 
 end_per_group(perf, Config) ->
     %% perf inject writes data to /tmp and ~/.debug/tmp so we need to clean
@@ -110,15 +120,27 @@ end_per_group(perf, Config) ->
 end_per_group(_, _Config) ->
     ok.
 
+init_per_testcase(jmsingle, Config) ->
+    case erlang:system_info(emu_flavor) of
+        jit ->
+            Config;
+        _ ->
+            {skip, "JIT-specific test"}
+    end;
 init_per_testcase(named_labels, Config) ->
-    %% Only run named_labels on platforms where we know it works.
-    case erlang:system_info(system_architecture) of
-	"x86" ++ _ ->
-	    [{asmbefore,get_tmp_asm_files()}|Config];
-	"aarch64" ++ _ ->
-	    [{asmbefore,get_tmp_asm_files()}|Config];
-	_ ->
-	    {skip, "Unsupported architecture"}
+    case erlang:system_info(emu_flavor) of
+        jit ->
+            %% Only run named_labels on platforms where we know it works.
+            case erlang:system_info(system_architecture) of
+                "x86" ++ _ ->
+                    [{asmbefore,get_tmp_asm_files()}|Config];
+                "aarch64" ++ _ ->
+                    [{asmbefore,get_tmp_asm_files()}|Config];
+                _ ->
+                    {skip, "Unsupported architecture"}
+            end;
+        _ ->
+            {skip, "JIT-specific test"}
     end;
 init_per_testcase(_Case, Config) ->
     Config.
