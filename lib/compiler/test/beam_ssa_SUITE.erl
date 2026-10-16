@@ -23,6 +23,9 @@
 -include_lib("stdlib/include/assert.hrl").
 -include("test_lib.hrl").
 
+%% Keep the less-than result large enough to exercise distant failure labels.
+-define(COMPARISON_LONG_PAYLOAD(P), P, P, P, P, P, P, P, P).
+
 -export([all/0,suite/0,groups/0,init_per_suite/1,end_per_suite/1,
 	 init_per_group/2,end_per_group/2,
          calls/1,tuple_matching/1,recv/1,maps/1,
@@ -38,7 +41,23 @@
          swapped_ladder/2,changed_operand_ladder/3,call_ladder/2,
          oracle_lt/2,oracle_gt/2,
          typed_small_integer/2,typed_float/2,
-         typed_small_integer_64_range/2,shared_second_predecessor/3]).
+         typed_small_integer_64_range/2,shared_second_predecessor/3,
+         typed_small_integer_lt_first/2,typed_small_integer_gt_first/2,
+         typed_integer_small_lt_first/2,typed_integer_small_gt_first/2,
+         typed_small_nonnegative_lt_first/2,
+         typed_small_nonnegative_gt_first/2,
+         typed_nonnegative_small_lt_first/2,
+         typed_nonnegative_small_gt_first/2,
+         typed_small_nonpositive_lt_first/2,
+         typed_small_nonpositive_gt_first/2,
+         typed_nonpositive_small_lt_first/2,
+         typed_nonpositive_small_gt_first/2,
+         typed_small_number_lt_first/2,typed_small_number_gt_first/2,
+         typed_number_small_lt_first/2,typed_number_small_gt_first/2,
+         typed_float_integer_lt_first/2,typed_float_integer_gt_first/2,
+         typed_integer_float_lt_first/2,typed_integer_float_gt_first/2,
+         typed_small_integer_long_lt_first/3,
+         typed_integer_small_long_lt_first/3]).
 
 -import_record(beam_ssa, [b_set, b_var, b_literal]).
 
@@ -1683,6 +1702,124 @@ typed_comparison_ladders(_Config) ->
                           Expected = oracle_compare(A, B),
                           Expected = typed_small_integer_64_range(A, B)
                   end, BoundaryPairs),
+
+    SmallValues = [-16, -1, 0, 1, 16],
+    BigLimit = 1 bsl 80,
+    IntegerValues = [SmallMin - 1, SmallMin, SmallMin + 1,
+                     -17, -16, -1, 0, 1, 16, 17,
+                     SmallMax - 1, SmallMax, SmallMax + 1,
+                     -BigLimit, BigLimit],
+    lists:foreach(fun(Small) ->
+                          lists:foreach(fun(Integer) ->
+                                                Expected = oracle_compare(Small, Integer),
+                                                Expected =
+                                                    typed_small_integer_lt_first(Small,
+                                                                                 Integer),
+                                                Expected =
+                                                    typed_small_integer_gt_first(Small,
+                                                                                 Integer),
+                                                Reverse = oracle_compare(Integer, Small),
+                                                Reverse =
+                                                    typed_integer_small_lt_first(Integer,
+                                                                                  Small),
+                                                Reverse =
+                                                    typed_integer_small_gt_first(Integer,
+                                                                                  Small)
+                                        end, IntegerValues)
+                  end, SmallValues),
+
+    NonnegativeIntegers = [0, 1, 16, SmallMax, SmallMax + 1, BigLimit],
+    NonpositiveIntegers = [-BigLimit, SmallMin - 1, SmallMin, -16, -1, 0],
+    lists:foreach(fun(Small) ->
+                          lists:foreach(fun(Integer) ->
+                                                Expected = oracle_compare(Small, Integer),
+                                                Expected =
+                                                    typed_small_nonnegative_lt_first(Small,
+                                                                                     Integer),
+                                                Expected =
+                                                    typed_small_nonnegative_gt_first(Small,
+                                                                                     Integer),
+                                                Reverse = oracle_compare(Integer, Small),
+                                                Reverse =
+                                                    typed_nonnegative_small_lt_first(Integer,
+                                                                                     Small),
+                                                Reverse =
+                                                    typed_nonnegative_small_gt_first(Integer,
+                                                                                     Small)
+                                        end, NonnegativeIntegers),
+                          lists:foreach(fun(Integer) ->
+                                                Expected = oracle_compare(Small, Integer),
+                                                Expected =
+                                                    typed_small_nonpositive_lt_first(Small,
+                                                                                     Integer),
+                                                Expected =
+                                                    typed_small_nonpositive_gt_first(Small,
+                                                                                     Integer),
+                                                Reverse = oracle_compare(Integer, Small),
+                                                Reverse =
+                                                    typed_nonpositive_small_lt_first(Integer,
+                                                                                     Small),
+                                                Reverse =
+                                                    typed_nonpositive_small_gt_first(Integer,
+                                                                                     Small)
+                                        end, NonpositiveIntegers)
+                  end, SmallValues),
+
+    SmallNumbers = lists:seq(-16, 16),
+    NumberValues = [SmallMin - 1, SmallMin, SmallMin + 1,
+                    -17, -16, -1, 0, 1, 16, 17,
+                    SmallMax - 1, SmallMax, SmallMax + 1,
+                    -(1 bsl 80), 1 bsl 80,
+                    -1.5, -0.0, 0.0, 0.5, 1.0, 1.5],
+    lists:foreach(fun(Small) ->
+                          lists:foreach(fun(Number) ->
+                                                Expected = oracle_compare(Small, Number),
+                                                Expected = typed_small_number_lt_first(
+                                                             Small, Number),
+                                                Expected = typed_small_number_gt_first(
+                                                             Small, Number),
+                                                Reverse = oracle_compare(Number, Small),
+                                                Reverse = typed_number_small_lt_first(
+                                                            Number, Small),
+                                                Reverse = typed_number_small_gt_first(
+                                                            Number, Small)
+                                        end, NumberValues)
+                  end, SmallNumbers),
+
+    BigFloat = float(1 bsl 80),
+    FloatIntegerPairs = [{Float, Integer} ||
+                            Float <- [-BigFloat, -9007199254740992.0,
+                                      -1.0, -0.0, 0.0, 1.0,
+                                      9007199254740992.0, BigFloat],
+                            Integer <- [-(1 bsl 80), -((1 bsl 53) + 1),
+                                        -(1 bsl 53), -((1 bsl 53) - 1),
+                                        -1, 0, 1, (1 bsl 53) - 1,
+                                        1 bsl 53, (1 bsl 53) + 1,
+                                        1 bsl 80]],
+    lists:foreach(fun({Float, Integer}) ->
+                          Expected = oracle_compare(Float, Integer),
+                          Expected = typed_float_integer_lt_first(Float, Integer),
+                          Expected = typed_float_integer_gt_first(Float, Integer),
+                          Reverse = oracle_compare(Integer, Float),
+                          Reverse = typed_integer_float_lt_first(Integer, Float),
+                          Reverse = typed_integer_float_gt_first(Integer, Float)
+                  end, FloatIntegerPairs),
+
+    Payload = make_ref(),
+    LongLeft = apply(?MODULE, typed_small_integer_long_lt_first,
+                     [0, 1, Payload]),
+    67 = tuple_size(LongLeft),
+    lt = element(1, LongLeft),
+    Payload = element(4, LongLeft),
+    gt = apply(?MODULE, typed_small_integer_long_lt_first, [1, 0, Payload]),
+    eq = apply(?MODULE, typed_small_integer_long_lt_first, [1, 1, Payload]),
+    LongRight = apply(?MODULE, typed_integer_small_long_lt_first,
+                      [0, 1, Payload]),
+    67 = tuple_size(LongRight),
+    lt = element(1, LongRight),
+    Payload = element(4, LongRight),
+    gt = apply(?MODULE, typed_integer_small_long_lt_first, [1, 0, Payload]),
+    eq = apply(?MODULE, typed_integer_small_long_lt_first, [1, 1, Payload]),
     ok.
 
 comparison_non_ladder_shapes(_Config) ->
@@ -1850,6 +1987,126 @@ typed_small_integer_64_range(A, B)
        is_integer(B), B >= -(1 bsl 59), B =< (1 bsl 59) - 1 ->
     if A < B -> lt; A > B -> gt; true -> eq end.
 
+typed_small_integer_lt_first(Small, Integer)
+  when is_integer(Small), Small >= -16, Small =< 16, is_integer(Integer) ->
+    if Small < Integer -> lt; Small > Integer -> gt; true -> eq end.
+
+typed_small_integer_gt_first(Small, Integer)
+  when is_integer(Small), Small >= -16, Small =< 16, is_integer(Integer) ->
+    if Small > Integer -> gt; Small < Integer -> lt; true -> eq end.
+
+typed_integer_small_lt_first(Integer, Small)
+  when is_integer(Integer), is_integer(Small), Small >= -16, Small =< 16 ->
+    if Integer < Small -> lt; Integer > Small -> gt; true -> eq end.
+
+typed_integer_small_gt_first(Integer, Small)
+  when is_integer(Integer), is_integer(Small), Small >= -16, Small =< 16 ->
+    if Integer > Small -> gt; Integer < Small -> lt; true -> eq end.
+
+typed_small_nonnegative_lt_first(Small, Integer)
+  when is_integer(Small), Small >= -16, Small =< 16,
+       is_integer(Integer), Integer >= 0 ->
+    if Small < Integer -> lt; Small > Integer -> gt; true -> eq end.
+
+typed_small_nonnegative_gt_first(Small, Integer)
+  when is_integer(Small), Small >= -16, Small =< 16,
+       is_integer(Integer), Integer >= 0 ->
+    if Small > Integer -> gt; Small < Integer -> lt; true -> eq end.
+
+typed_nonnegative_small_lt_first(Integer, Small)
+  when is_integer(Integer), Integer >= 0,
+       is_integer(Small), Small >= -16, Small =< 16 ->
+    if Integer < Small -> lt; Integer > Small -> gt; true -> eq end.
+
+typed_nonnegative_small_gt_first(Integer, Small)
+  when is_integer(Integer), Integer >= 0,
+       is_integer(Small), Small >= -16, Small =< 16 ->
+    if Integer > Small -> gt; Integer < Small -> lt; true -> eq end.
+
+typed_small_nonpositive_lt_first(Small, Integer)
+  when is_integer(Small), Small >= -16, Small =< 16,
+       is_integer(Integer), Integer =< 0 ->
+    if Small < Integer -> lt; Small > Integer -> gt; true -> eq end.
+
+typed_small_nonpositive_gt_first(Small, Integer)
+  when is_integer(Small), Small >= -16, Small =< 16,
+       is_integer(Integer), Integer =< 0 ->
+    if Small > Integer -> gt; Small < Integer -> lt; true -> eq end.
+
+typed_nonpositive_small_lt_first(Integer, Small)
+  when is_integer(Integer), Integer =< 0,
+       is_integer(Small), Small >= -16, Small =< 16 ->
+    if Integer < Small -> lt; Integer > Small -> gt; true -> eq end.
+
+typed_nonpositive_small_gt_first(Integer, Small)
+  when is_integer(Integer), Integer =< 0,
+       is_integer(Small), Small >= -16, Small =< 16 ->
+    if Integer > Small -> gt; Integer < Small -> lt; true -> eq end.
+
+typed_small_number_lt_first(Small, Number)
+  when is_integer(Small), Small >= -16, Small =< 16, is_number(Number) ->
+    if Small < Number -> lt; Small > Number -> gt; true -> eq end.
+
+typed_small_number_gt_first(Small, Number)
+  when is_integer(Small), Small >= -16, Small =< 16, is_number(Number) ->
+    if Small > Number -> gt; Small < Number -> lt; true -> eq end.
+
+typed_number_small_lt_first(Number, Small)
+  when is_number(Number), is_integer(Small), Small >= -16, Small =< 16 ->
+    if Number < Small -> lt; Number > Small -> gt; true -> eq end.
+
+typed_number_small_gt_first(Number, Small)
+  when is_number(Number), is_integer(Small), Small >= -16, Small =< 16 ->
+    if Number > Small -> gt; Number < Small -> lt; true -> eq end.
+
+typed_float_integer_lt_first(Float, Integer)
+  when is_float(Float), is_integer(Integer) ->
+    if Float < Integer -> lt; Float > Integer -> gt; true -> eq end.
+
+typed_float_integer_gt_first(Float, Integer)
+  when is_float(Float), is_integer(Integer) ->
+    if Float > Integer -> gt; Float < Integer -> lt; true -> eq end.
+
+typed_integer_float_lt_first(Integer, Float)
+  when is_integer(Integer), is_float(Float) ->
+    if Integer < Float -> lt; Integer > Float -> gt; true -> eq end.
+
+typed_integer_float_gt_first(Integer, Float)
+  when is_integer(Integer), is_float(Float) ->
+    if Integer > Float -> gt; Integer < Float -> lt; true -> eq end.
+
+typed_small_integer_long_lt_first(Small, Integer, Payload)
+  when is_integer(Small), Small >= -16, Small =< 16,
+       is_integer(Integer), Integer =< 16 ->
+    if Small < Integer ->
+            {lt,Small,Integer,?COMPARISON_LONG_PAYLOAD(Payload),
+             ?COMPARISON_LONG_PAYLOAD(Payload),
+             ?COMPARISON_LONG_PAYLOAD(Payload),
+             ?COMPARISON_LONG_PAYLOAD(Payload),
+             ?COMPARISON_LONG_PAYLOAD(Payload),
+             ?COMPARISON_LONG_PAYLOAD(Payload),
+             ?COMPARISON_LONG_PAYLOAD(Payload),
+             ?COMPARISON_LONG_PAYLOAD(Payload)};
+       Small > Integer -> gt;
+       true -> eq
+    end.
+
+typed_integer_small_long_lt_first(Integer, Small, Payload)
+  when is_integer(Integer), Integer >= -16,
+       is_integer(Small), Small >= -16, Small =< 16 ->
+    if Integer < Small ->
+            {lt,Integer,Small,?COMPARISON_LONG_PAYLOAD(Payload),
+             ?COMPARISON_LONG_PAYLOAD(Payload),
+             ?COMPARISON_LONG_PAYLOAD(Payload),
+             ?COMPARISON_LONG_PAYLOAD(Payload),
+             ?COMPARISON_LONG_PAYLOAD(Payload),
+             ?COMPARISON_LONG_PAYLOAD(Payload),
+             ?COMPARISON_LONG_PAYLOAD(Payload),
+             ?COMPARISON_LONG_PAYLOAD(Payload)};
+       Integer > Small -> gt;
+       true -> eq
+    end.
+
 typed_float(A, B) when is_float(A), is_float(B) ->
     if A < B -> lt; A > B -> gt; true -> eq end.
 
@@ -1945,18 +2202,91 @@ assert_comparison_ladder_asm() ->
                           true = has_adjacent_ge_tests(Instructions)
                   end, [lt_gt,gt_lt,swapped_ladder,
                         typed_small_integer,typed_float,
-                        typed_small_integer_64_range]).
+                        typed_small_integer_64_range,
+                        typed_small_integer_lt_first,
+                        typed_small_integer_gt_first,
+                        typed_integer_small_lt_first,
+                        typed_integer_small_gt_first,
+                        typed_small_nonnegative_lt_first,
+                        typed_small_nonnegative_gt_first,
+                        typed_nonnegative_small_lt_first,
+                        typed_nonnegative_small_gt_first,
+                        typed_small_nonpositive_lt_first,
+                        typed_small_nonpositive_gt_first,
+                        typed_nonpositive_small_lt_first,
+                        typed_nonpositive_small_gt_first,
+                        typed_small_number_lt_first,
+                        typed_small_number_gt_first,
+                        typed_number_small_lt_first,
+                        typed_number_small_gt_first,
+                        typed_float_integer_lt_first,
+                        typed_float_integer_gt_first,
+                        typed_integer_float_lt_first,
+                        typed_integer_float_gt_first]),
+    lists:foreach(fun(Name) ->
+                          {function,Name,2,_,Instructions} =
+                              lists:keyfind(Name, 2, Functions),
+                          true = has_guard_test(is_integer, Instructions),
+                          true = has_guard_test(is_number, Instructions)
+                  end, [typed_small_number_lt_first,
+                        typed_small_number_gt_first,
+                        typed_number_small_lt_first,
+                        typed_number_small_gt_first]),
+    lists:foreach(fun(Name) ->
+                          {function,Name,2,_,Instructions} =
+                              lists:keyfind(Name, 2, Functions),
+                          true = has_guard_bound(-16, Instructions),
+                          true = has_guard_bound(16, Instructions)
+                  end, [typed_small_number_lt_first,
+                        typed_small_number_gt_first,
+                        typed_number_small_lt_first,
+                        typed_number_small_gt_first]),
+    lists:foreach(fun(Name) ->
+                          {function,Name,3,_,Instructions} =
+                              lists:keyfind(Name, 2, Functions),
+                          true = has_adjacent_ge_tests(Instructions)
+                  end, [typed_small_integer_long_lt_first,
+                        typed_integer_small_long_lt_first]).
 
-has_adjacent_ge_tests([{test,is_ge,{f,LT},[A,B]},
-                       {test,is_ge,{f,GT},[B,A]},
-                       {jump,{f,EQ}},
-                       {label,LT}|_])
-  when LT =/= GT, LT =/= EQ, GT =/= EQ ->
+has_guard_test(Name, [{test,Name,_,_}|_]) ->
     true;
+has_guard_test(Name, [_|Instructions]) ->
+    has_guard_test(Name, Instructions);
+has_guard_test(_Name, []) ->
+    false.
+
+has_guard_bound(Bound, [{test,is_ge,_,Operands}|Instructions]) ->
+    case lists:any(fun(Operand) -> guard_integer(Operand) =:= Bound end,
+                   Operands) of
+        true -> true;
+        false -> has_guard_bound(Bound, Instructions)
+    end;
+has_guard_bound(Bound, [_|Instructions]) ->
+    has_guard_bound(Bound, Instructions);
+has_guard_bound(_Bound, []) ->
+    false.
+
+guard_integer({integer,Integer}) -> Integer;
+guard_integer(Integer) when is_integer(Integer) -> Integer;
+guard_integer(_) -> undefined.
+
+has_adjacent_ge_tests([{test,is_ge,{f,LT},[A0,B0]},
+                       {test,is_ge,{f,GT},[B1,A1]},
+                       {jump,{f,EQ}},
+                       {label,LT}|_]=Instructions)
+  when LT =/= GT, LT =/= EQ, GT =/= EQ ->
+    case comparison_operand(A0) =:= comparison_operand(A1) andalso
+         comparison_operand(B0) =:= comparison_operand(B1) of
+        true -> true;
+        false -> has_adjacent_ge_tests(tl(Instructions))
+    end;
 has_adjacent_ge_tests([_|Instructions]) ->
     has_adjacent_ge_tests(Instructions);
 has_adjacent_ge_tests([]) ->
     false.
+
+comparison_operand({tr,Reg,_Type}) -> Reg;
+comparison_operand(Reg) -> Reg.
 
 %% The identity function.
 id(I) -> I.

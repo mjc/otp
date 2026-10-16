@@ -2911,6 +2911,65 @@ void BeamModuleAssembler::emit_i_compare(ArgLabel const &FailGT,
         return;
     }
 
+    if ((always_small(A) && exact_type<BeamTypeId::Integer>(B)) ||
+        (exact_type<BeamTypeId::Integer>(A) && always_small(B))) {
+        Label small = a.new_label(), done = a.new_label();
+        x86::Gp boxed_ptr;
+
+        mov_arg(ARG2, B); /* May clobber ARG1 */
+        mov_arg(ARG1, A);
+
+        if (always_small(A)) {
+            comment("simplified small-integer comparison against known "
+                    "integer");
+            if (hasLowerBound(B)) {
+                comment("bignum is positive, so small operand is less");
+                emit_is_not_boxed(done, ARG2, dShort);
+            } else if (hasUpperBound(B)) {
+                comment("bignum is negative, so small operand is greater");
+                emit_is_not_boxed(resolve_beam_label(FailGT), ARG2);
+            } else {
+                emit_is_boxed(small, ARG2, dShort);
+
+                boxed_ptr = emit_ptr_val(ARG4, ARG2);
+                a.mov(RETd, emit_boxed_val(boxed_ptr, 0, sizeof(Uint32)));
+                a.and_(RETb, imm(_TAG_HEADER_MASK));
+                ERTS_CT_ASSERT(_TAG_HEADER_NEG_BIG > _TAG_HEADER_POS_BIG);
+                a.cmp(RETb, imm(_TAG_HEADER_NEG_BIG));
+                a.je(resolve_beam_label(FailGT));
+                a.short_().jmp(done);
+            }
+        } else {
+            comment("simplified known-integer comparison against small");
+            if (hasUpperBound(A)) {
+                comment("bignum is negative, so integer operand is less");
+                emit_is_not_boxed(done, ARG1, dShort);
+            } else if (hasLowerBound(A)) {
+                comment("bignum is positive, so integer operand is greater");
+                emit_is_not_boxed(resolve_beam_label(FailGT), ARG1);
+            } else {
+                emit_is_boxed(small, ARG1, dShort);
+
+                boxed_ptr = emit_ptr_val(ARG4, ARG1);
+                a.mov(RETd, emit_boxed_val(boxed_ptr, 0, sizeof(Uint32)));
+                a.and_(RETb, imm(_TAG_HEADER_MASK));
+                ERTS_CT_ASSERT(_TAG_HEADER_NEG_BIG > _TAG_HEADER_POS_BIG);
+                a.cmp(RETb, imm(_TAG_HEADER_NEG_BIG));
+                a.je(done);
+                a.jmp(resolve_beam_label(FailGT));
+            }
+        }
+
+        a.bind(small);
+        preserve_cache([&]() {
+            a.cmp(ARG1, ARG2);
+            a.jg(resolve_beam_label(FailGT));
+            a.je(resolve_beam_label(Equal));
+        });
+        a.bind(done);
+        return;
+    }
+
     Label generic = a.new_label(), lt_done = a.new_label();
 
     mov_arg(ARG2, B); /* May clobber ARG1 */
@@ -2939,16 +2998,43 @@ void BeamModuleAssembler::emit_i_compare(ArgLabel const &FailGT,
         return;
     }
 
-    /* Keep the common small-integer case on the inline path. */
-    a.mov(RETd, ARG1d);
-    a.and_(RETd, ARG2d);
-    a.and_(RETb, imm(_TAG_IMMED1_MASK));
-    a.cmp(RETb, imm(_TAG_IMMED1_SMALL));
-    a.short_().jne(generic);
+    if (never_one_of<BeamTypeId::Integer>(A) ||
+        never_one_of<BeamTypeId::Integer>(B)) {
+        safe_fragment_call(ga->get_arith_compare_shared());
+        a.jg(resolve_beam_label(FailGT));
+        a.je(resolve_beam_label(Equal));
+        return;
+    }
 
-    a.cmp(ARG1, ARG2);
-    a.jg(resolve_beam_label(FailGT));
-    a.short_().jmp(lt_done);
+    if ((always_small(A) &&
+         always_one_of<BeamTypeId::Integer, BeamTypeId::AlwaysBoxed>(B)) ||
+        (always_small(B) &&
+         always_one_of<BeamTypeId::Integer, BeamTypeId::AlwaysBoxed>(A))) {
+        /* Only small integers can be immediate for these operands. */
+        emit_is_not_boxed(generic, always_small(A) ? ARG2 : ARG1, dShort);
+        preserve_cache([&]() {
+            a.cmp(ARG1, ARG2);
+            a.jg(resolve_beam_label(FailGT));
+            a.short_().jmp(lt_done);
+        });
+    } else {
+        /* Keep the common small-integer case on the inline path. */
+        if (always_small(A)) {
+            a.mov(RETd, ARG2d);
+        } else if (always_small(B)) {
+            a.mov(RETd, ARG1d);
+        } else {
+            a.mov(RETd, ARG1d);
+            a.and_(RETd, ARG2d);
+        }
+        a.and_(RETb, imm(_TAG_IMMED1_MASK));
+        a.cmp(RETb, imm(_TAG_IMMED1_SMALL));
+        a.short_().jne(generic);
+
+        a.cmp(ARG1, ARG2);
+        a.jg(resolve_beam_label(FailGT));
+        a.short_().jmp(lt_done);
+    }
 
     a.bind(generic);
     safe_fragment_call(ga->get_arith_compare_shared());

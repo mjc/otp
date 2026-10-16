@@ -1130,17 +1130,19 @@ i_compare(Greater, Equal, A, B) {
     Eterm a = $A;
     Eterm b = $B;
 
-    if (a == b) {
-        $FAIL($Equal);
-    }
-
     if (is_both_small(a, b)) {
-        Sint a_value = signed_val(a);
-        Sint b_value = signed_val(b);
+        Sint a_value = (Sint)a;
+        Sint b_value = (Sint)b;
 
-        if (a_value > b_value) {
+        if (a_value < b_value) {
+            /* Less-than falls through. */
+        } else if (a_value == b_value) {
+            $FAIL($Equal);
+        } else {
             $FAIL($Greater);
         }
+    } else if (a == b) {
+        $FAIL($Equal);
     } else if (is_atom(a) && is_atom(b)) {
         int cmp = erts_cmp_atoms(a, b);
 
