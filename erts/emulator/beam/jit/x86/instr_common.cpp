@@ -2920,6 +2920,25 @@ void BeamModuleAssembler::emit_i_compare(ArgLabel const &FailGT,
     a.cmp(ARG1, ARG2);
     a.je(resolve_beam_label(Equal));
 
+    if (exact_type<BeamTypeId::Float>(A) && exact_type<BeamTypeId::Float>(B)) {
+        x86::Gp boxed_ptr;
+
+        /* The shared helper would repeat the boxed/header checks for floats. */
+        boxed_ptr = emit_ptr_val(ARG3, ARG1);
+        vmovsd(x86::xmm0, emit_boxed_val(boxed_ptr, sizeof(Eterm)));
+        boxed_ptr = emit_ptr_val(ARG5, ARG2);
+        vmovsd(x86::xmm1, emit_boxed_val(boxed_ptr, sizeof(Eterm)));
+        vucomisd(x86::xmm0, x86::xmm1);
+
+        /* Match the shared comparison's LT result for unordered values. */
+        a.jp(lt_done);
+        a.ja(resolve_beam_label(FailGT));
+        a.je(resolve_beam_label(Equal));
+
+        a.bind(lt_done);
+        return;
+    }
+
     /* Keep the common small-integer case on the inline path. */
     a.mov(RETd, ARG1d);
     a.and_(RETd, ARG2d);

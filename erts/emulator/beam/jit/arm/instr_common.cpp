@@ -2804,6 +2804,18 @@ void BeamModuleAssembler::emit_i_compare(ArgLabel const &FailGT,
     a.cmp(lhs.reg, rhs.reg);
     a.b_eq(resolve_beam_label(Equal, disp1MB));
 
+    if (exact_type<BeamTypeId::Float>(A) && exact_type<BeamTypeId::Float>(B)) {
+        /* The shared helper would repeat the boxed/header checks for floats. */
+        a64::Gp boxed_ptr1 = emit_ptr_val(TMP1, lhs.reg);
+        a64::Gp boxed_ptr2 = emit_ptr_val(TMP2, rhs.reg);
+        a.ldur(a64::d0, emit_boxed_val(boxed_ptr1, sizeof(Eterm)));
+        a.ldur(a64::d1, emit_boxed_val(boxed_ptr2, sizeof(Eterm)));
+        a.fcmpe(a64::d0, a64::d1);
+        a.b_gt(resolve_beam_label(FailGT, disp1MB));
+        a.b_eq(resolve_beam_label(Equal, disp1MB));
+        return;
+    }
+
     /* Keep the common small-integer case on the inline path. */
     ERTS_CT_ASSERT(_TAG_IMMED1_SMALL == _TAG_IMMED1_MASK);
     a.and_(TMP1, lhs.reg, rhs.reg);

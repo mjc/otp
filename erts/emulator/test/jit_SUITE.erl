@@ -29,6 +29,7 @@
 -export([annotate/1, jmsingle/1, named_labels/1, ordering_comparison/1,
          ordering_comparison_near_match/1,
          ordering_comparison_registers/1,
+         typed_float_comparison/1,
          symbols/1, perfdirectory_set/1, perfdirectory_not_set/1]).
 
 suite() ->
@@ -39,7 +40,8 @@ groups() ->
 
 all() ->
     [{group, perf}, jmsingle, named_labels, ordering_comparison,
-     ordering_comparison_near_match, ordering_comparison_registers].
+     ordering_comparison_near_match, ordering_comparison_registers,
+     typed_float_comparison].
 
 init_per_suite(Config) ->
     case erlang:system_info(emu_flavor) of
@@ -409,6 +411,22 @@ ordering_comparison_registers(Config) ->
         1 = Mod:run_yx(1, 1.0),
         less = Mod:run_yx(1, 2),
         greater = Mod:run_yx(2, 1)
+    after
+        true = code:delete(Mod),
+        false = code:purge(Mod)
+    end,
+
+    ok.
+
+typed_float_comparison(Config) ->
+    DataDir = proplists:get_value(data_dir, Config),
+    Mod = typed_float_compare_bench,
+    File = filename:join(DataDir, "typed_float_compare_bench"),
+    {ok,Mod,Code} = compile:file(File, [binary]),
+    {module,Mod} = code:load_binary(Mod, File, Code),
+
+    try
+        ok = Mod:check()
     after
         true = code:delete(Mod),
         false = code:purge(Mod)
