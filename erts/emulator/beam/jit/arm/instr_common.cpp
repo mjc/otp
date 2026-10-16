@@ -2785,9 +2785,9 @@ void BeamModuleAssembler::emit_is_ge_ge(ArgLabel const &Fail1,
 }
 
 void BeamModuleAssembler::emit_i_compare(ArgLabel const &FailGT,
-                                        ArgLabel const &Equal,
-                                        ArgSource const &A,
-                                        ArgSource const &B) {
+                                         ArgLabel const &Equal,
+                                         ArgSource const &A,
+                                         ArgSource const &B) {
     Label generic = a.new_label(), lt_done = a.new_label();
     auto [lhs, rhs] = load_sources(A, ARG1, B, ARG2);
 

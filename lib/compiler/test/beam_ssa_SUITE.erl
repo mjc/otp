@@ -32,11 +32,15 @@
          grab_bag/1,redundant_br/1,
          coverage/1,normalize/1,
          trycatch/1,gh_6599/1,cs_div/1,gh_11494/1,
-         comparison_ladder/1]).
+         comparison_ladder/1,comparison_pair_matrix/1,
+         typed_comparison_ladders/1,comparison_non_ladder_shapes/1]).
 -export([lt_gt/2,gt_lt/2,strict_ladder/2,lt_gt_keep/2,
-         changed_operand_ladder/3,call_ladder/2]).
+         swapped_ladder/2,changed_operand_ladder/3,call_ladder/2,
+         oracle_lt/2,oracle_gt/2]).
 
 -import_record(beam_ssa, [b_set, b_var, b_literal]).
+
+-record #comparison_record{value, nested}.
 
 suite() -> [{ct_hooks,[ts_install_cth]}].
 
@@ -63,7 +67,10 @@ groups() ->
        gh_6599,
        cs_div,
        gh_11494,
-       comparison_ladder
+       comparison_ladder,
+       comparison_pair_matrix,
+       typed_comparison_ladders,
+       comparison_non_ladder_shapes
       ]}].
 
 init_per_suite(Config) ->
@@ -1629,6 +1636,239 @@ comparison_ladder(_Config) ->
     receive {sample,1,1.0} -> ok after 0 -> error(skipped_message_missing) end,
     ok.
 
+comparison_pair_matrix(_Config) ->
+    Terms = comparison_terms(),
+    lists:foreach(fun(A) ->
+                          lists:foreach(fun(B) ->
+                                                Expected = oracle_compare(A, B),
+                                                Expected = lt_gt(A, B),
+                                                Expected = gt_lt(A, B),
+                                                Expected = swapped_ladder(A, B),
+                                                check_strict_ladder(A, B, Expected)
+                                        end, Terms)
+                  end, Terms),
+    ok.
+
+typed_comparison_ladders(_Config) ->
+    SmallInts = lists:seq(-16, 16),
+    lists:foreach(fun(A) ->
+                          lists:foreach(fun(B) ->
+                                                Expected = oracle_compare(A, B),
+                                                Expected = typed_small_integer(A, B)
+                                        end, SmallInts)
+                  end, SmallInts),
+
+    Floats = [-1.5, -0.0, 0.0, 0.5, 1.0, 1.5, 1.0e100],
+    lists:foreach(fun(A) ->
+                          lists:foreach(fun(B) ->
+                                                Expected = oracle_compare(A, B),
+                                                Expected = typed_float(A, B)
+                                        end, Floats)
+                  end, Floats),
+
+    SmallLimit = 1 bsl (erlang:system_info(wordsize) * 8 - 5),
+    SmallMin = -SmallLimit,
+    SmallMax = SmallLimit - 1,
+    BoundaryPairs = [{SmallMin,SmallMin},
+                     {SmallMin,SmallMin + 1},
+                     {SmallMin + 1,SmallMin},
+                     {SmallMax - 1,SmallMax},
+                     {SmallMax,SmallMax - 1},
+                     {SmallMax,SmallMax}],
+    %% On 64-bit these reach the native small-integer endpoints. On 32-bit
+    %% they exercise the same wide integer guard through generic comparisons.
+    lists:foreach(fun({A,B}) ->
+                          Expected = oracle_compare(A, B),
+                          Expected = typed_small_integer_64_range(A, B)
+                  end, BoundaryPairs),
+    ok.
+
+comparison_non_ladder_shapes(_Config) ->
+    {beam_file,?MODULE,_,_,_,Functions} = beam_disasm:file(code:which(?MODULE)),
+    {function,shared_second_predecessor,3,_,SharedInstructions} =
+        lists:keyfind(shared_second_predecessor, 2, Functions),
+    false = has_adjacent_ge_tests(SharedInstructions),
+
+    Pairs = [{1,2}, {2,1}, {1,1.0}, {-0.0,0.0},
+             {{a},[a]}, {#{1 => a},#{1.0 => a}}],
+    lists:foreach(fun({A,B}) ->
+                          Expected = oracle_compare(A, B),
+                          Expected = shared_second_predecessor(A, B, true),
+                          ExpectedFalse = oracle_shared_false(A, B),
+                          ExpectedFalse = shared_second_predecessor(A, B, false)
+                  end, Pairs),
+    FoldPairs = [{1,2}, {2,1}, {1,1.0}, {-0.0,0.0}],
+    ExpectedFold = [oracle_compare(A, B) || {A,B} <- FoldPairs],
+    ExpectedFold = comparison_fold(FoldPairs),
+    ok = comparison_receive_matrix(),
+    ok.
+
+comparison_terms() ->
+    WordBits = erlang:system_info(wordsize) * 8,
+    SmallLimit = 1 bsl (WordBits - 5),
+    BigLimit = 1 bsl 60,
+    RefA = make_ref(),
+    RefB = make_ref(),
+    Pid = self(),
+    OtherPid = spawn(fun() -> ok end),
+    FunA = fun() -> a end,
+    FunB = fun() -> b end,
+    ExternalFunA = fun erlang:length/1,
+    ExternalFunB = fun erlang:hd/1,
+    LongListA = lists:seq(1, 64),
+    LongListEqual = binary_to_term(term_to_binary(LongListA)),
+    LongListEarly = [0|tl(LongListA)],
+    LongListLate = lists:sublist(LongListA, 63) ++ [999],
+    LongTupleA = list_to_tuple(lists:seq(1, 24)),
+    LongTupleEqual = binary_to_term(term_to_binary(LongTupleA)),
+    LongTupleEarly = setelement(1, LongTupleA, 0),
+    LongTupleLate = setelement(tuple_size(LongTupleA), LongTupleA, 999),
+    LongBitsA = list_to_binary(lists:seq(0, 63)),
+    LongBitsEqual = binary_to_term(term_to_binary(LongBitsA)),
+    LongBitsEarly = <<255, (binary:part(LongBitsA, 1, 63))/binary>>,
+    LongBitsLate = <<(binary:part(LongBitsA, 0, 63))/binary, 255>>,
+    LargeMapBase = maps:from_list([{N,N} || N <- lists:seq(1, 40)]),
+    LargeMapEqual = binary_to_term(term_to_binary(LargeMapBase)),
+    LargeMapReversed = maps:from_list(lists:reverse(maps:to_list(LargeMapBase))),
+    LargeMapEarly = LargeMapBase#{1 => 0},
+    LargeMapLate = LargeMapBase#{40 => 41},
+    LargeMapLastInt = LargeMapBase#{40 => 1},
+    LargeMapLastFloat = LargeMapBase#{40 => 1.0},
+    NativeRecordInt = #comparison_record{value=1,nested=#{n => [1]}},
+    NativeRecordFloat = #comparison_record{value=1.0,nested=#{n => [1.0]}},
+    NativeRecordDifferent = #comparison_record{value=1,nested=#{n => [2]}},
+    NativeRecordCopy = binary_to_term(term_to_binary(NativeRecordInt)),
+    Ports = lists:sublist(erlang:ports(), 2),
+    assert_fresh_equal(LongListA, LongListEqual),
+    assert_fresh_equal(LongTupleA, LongTupleEqual),
+    assert_fresh_equal(LongBitsA, LongBitsEqual),
+    assert_fresh_equal(LargeMapBase, LargeMapEqual),
+    assert_fresh_equal(NativeRecordInt, NativeRecordCopy),
+    NumericKeysA = maps:from_list([{1,integer_key},{1.0,float_key}]),
+    NumericKeysB = maps:from_list([{1,float_key},{1.0,integer_key}]),
+    NestedMapInt = #{a => [#{n => 1}]},
+    NestedMapFloat = #{a => [#{n => 1.0}]},
+    [ -16, -1, 0, 1, 16,
+      SmallLimit * -1 - 1, SmallLimit * -1, SmallLimit * -1 + 1,
+      SmallLimit - 2, SmallLimit - 1, SmallLimit,
+      -BigLimit - 1, -BigLimit, -BigLimit + 1,
+      BigLimit - 1, BigLimit, BigLimit + 1,
+      9007199254740992, 9007199254740993,
+      9007199254740992.0, 9007199254740994.0,
+      -1.5, -0.0, 0.0, 1.0, 1.5, 1.0e100,
+      a, z, [], [1], [1.0], [1,2], [1|tail],
+      LongListA, LongListEqual, LongListEarly, LongListLate,
+      {}, {1}, {1.0}, {1,2},
+      LongTupleA, LongTupleEqual, LongTupleEarly, LongTupleLate,
+     <<>>, <<0>>, <<1,2>>, <<1:1>>,
+      LongBitsA, LongBitsEqual, LongBitsEarly, LongBitsLate,
+      #{}, #{a => 1}, #{a => 1.0},
+      NestedMapInt, NestedMapFloat, NumericKeysA, NumericKeysB,
+      LargeMapBase, LargeMapEqual, LargeMapReversed,
+      LargeMapEarly, LargeMapLate,
+      LargeMapLastInt, LargeMapLastFloat,
+      NativeRecordInt, NativeRecordFloat, NativeRecordDifferent,
+      NativeRecordCopy,
+      RefA, RefB, Pid, OtherPid, FunA, FunB, ExternalFunA, ExternalFunB] ++
+        case Ports of
+            [] ->
+                io:format("No existing ports available for comparison corpus~n"),
+                [];
+            _ -> Ports
+        end.
+
+assert_fresh_equal(A, B) ->
+    true = A =:= B,
+    false = erts_debug:same(A, B),
+    ok.
+
+comparison_receive_matrix() ->
+    Cases = [{1,1.0,0,1,2,1},
+             {[1],[1.0],[0],[1],[2],[1]},
+             {#{a => 1},#{a => 1.0},#{a => 0},#{a => 1},
+              #{a => 2},#{a => 1}},
+             {{pair,[1],#{n => 1}}, {pair,[1.0],#{n => 1.0}},
+              {pair,[0],#{n => 1}}, {pair,[1],#{n => 1}},
+              {pair,[2],#{n => 1}}, {pair,[1],#{n => 1}}}],
+    lists:foreach(fun({EqualA,EqualB,LessA,LessB,GreaterA,GreaterB}) ->
+                          self() ! {comparison_message,EqualA,EqualB},
+                          self() ! {comparison_message,GreaterA,GreaterB},
+                          greater = comparison_receive_guard(),
+                          receive
+                              {comparison_message,EqualA,EqualB} -> ok
+                          after 0 -> error(equal_message_was_not_skipped)
+                          end,
+                          self() ! {comparison_message,LessA,LessB},
+                          less = comparison_receive_guard()
+                  end, Cases),
+    ok.
+
+comparison_receive_guard() ->
+    receive
+        {comparison_message,A,B} when A < B -> less;
+        {comparison_message,A,B} when A > B -> greater
+    after 0 ->
+        timeout
+    end.
+
+oracle_compare(A, B) ->
+    case apply(?MODULE, oracle_lt, [A, B]) of
+        true -> lt;
+        false ->
+            case apply(?MODULE, oracle_gt, [A, B]) of
+                true -> gt;
+                false -> eq
+            end
+    end.
+
+oracle_lt(A, B) -> A < B.
+oracle_gt(A, B) -> A > B.
+
+oracle_shared_false(A, B) ->
+    case oracle_gt(A, B) of
+        true -> gt;
+        false -> eq
+    end.
+
+check_strict_ladder(A, B, eq) ->
+    case A =:= B of
+        true -> exact = strict_ladder(A, B);
+        false -> ?assertError(if_clause, strict_ladder(A, B))
+    end;
+check_strict_ladder(A, B, Expected) ->
+    Expected = strict_ladder(A, B).
+
+typed_small_integer(A, B)
+  when is_integer(A), A >= -16, A =< 16,
+       is_integer(B), B >= -16, B =< 16 ->
+    if A < B -> lt; A > B -> gt; true -> eq end.
+
+typed_small_integer_64_range(A, B)
+  when is_integer(A), A >= -(1 bsl 59), A =< (1 bsl 59) - 1,
+       is_integer(B), B >= -(1 bsl 59), B =< (1 bsl 59) - 1 ->
+    if A < B -> lt; A > B -> gt; true -> eq end.
+
+typed_float(A, B) when is_float(A), is_float(B) ->
+    if A < B -> lt; A > B -> gt; true -> eq end.
+
+shared_second_predecessor(A, B, Select)
+  when is_boolean(Select) ->
+    %% Both failed guards join at the A > B comparison.
+    if
+        Select, A < B -> lt;
+        A > B -> gt;
+        true -> eq
+    end.
+
+comparison_fold(Pairs) ->
+    comparison_fold(Pairs, []).
+
+comparison_fold([], Acc) ->
+    lists:reverse(Acc);
+comparison_fold([{A,B}|Pairs], Acc) ->
+    Tag = if A < B -> lt; A > B -> gt; true -> eq end,
+    comparison_fold(Pairs, [Tag|Acc]).
+
 lt_gt(A, B) ->
     if
         A < B -> lt;
@@ -1640,6 +1880,13 @@ gt_lt(A, B) ->
     if
         A > B -> gt;
         A < B -> lt;
+        true -> eq
+    end.
+
+swapped_ladder(A, B) ->
+    if
+        B < A -> gt;
+        B > A -> lt;
         true -> eq
     end.
 
@@ -1694,7 +1941,9 @@ assert_comparison_ladder_asm() ->
                           {function,Name,2,_,Instructions} =
                               lists:keyfind(Name, 2, Functions),
                           true = has_adjacent_ge_tests(Instructions)
-                  end, [lt_gt,gt_lt]).
+                  end, [lt_gt,gt_lt,swapped_ladder,
+                        typed_small_integer,typed_float,
+                        typed_small_integer_64_range]).
 
 has_adjacent_ge_tests([{test,is_ge,{f,LT},[A,B]},
                        {test,is_ge,{f,GT},[B,A]},

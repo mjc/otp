@@ -2897,9 +2897,9 @@ void BeamModuleAssembler::emit_is_ge_ge(ArgLabel const &Fail1,
 }
 
 void BeamModuleAssembler::emit_i_compare(ArgLabel const &FailGT,
-                                        ArgLabel const &Equal,
-                                        ArgSource const &A,
-                                        ArgSource const &B) {
+                                         ArgLabel const &Equal,
+                                         ArgSource const &A,
+                                         ArgSource const &B) {
     if (always_small(A) && always_small(B)) {
         mov_arg(ARG2, B); /* May clobber ARG1 */
         mov_arg(ARG1, A);

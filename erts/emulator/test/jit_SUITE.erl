@@ -28,6 +28,7 @@
          init_per_testcase/2, end_per_testcase/2]).
 -export([annotate/1, jmsingle/1, named_labels/1, ordering_comparison/1,
          ordering_comparison_near_match/1,
+         ordering_comparison_registers/1,
          symbols/1, perfdirectory_set/1, perfdirectory_not_set/1]).
 
 suite() ->
@@ -38,7 +39,7 @@ groups() ->
 
 all() ->
     [{group, perf}, jmsingle, named_labels, ordering_comparison,
-     ordering_comparison_near_match].
+     ordering_comparison_near_match, ordering_comparison_registers].
 
 init_per_suite(Config) ->
     case erlang:system_info(emu_flavor) of
@@ -307,6 +308,27 @@ ordering_comparison(Config) ->
         EqualB = binary_to_term(term_to_binary(EqualA)),
         EqualA = Mod:run(EqualA, padding, EqualB),
 
+        Prefix = lists:duplicate(256, prefix),
+        LargeA = {ordering,Prefix ++ [a]},
+        LargeB = {ordering,Prefix ++ [b]},
+        LargeBcopy = binary_to_term(term_to_binary(LargeB)),
+        LargeA = Mod:run(LargeA, padding, binary_to_term(term_to_binary(LargeA))),
+        less = Mod:run(LargeA, padding, LargeB),
+        greater = Mod:run(LargeBcopy, padding, LargeA),
+
+        SmallBits = erlang:system_info(wordsize) * 8 - 5,
+        SmallMin = -(1 bsl SmallBits),
+        SmallMax = (1 bsl SmallBits) - 1,
+        SmallMin = Mod:run(SmallMin, padding, SmallMin),
+        less = Mod:run(SmallMin, padding, SmallMax),
+        greater = Mod:run(SmallMax, padding, SmallMin),
+
+        1 = Mod:run(1, padding, 1.0),
+        PosZero = 0.0,
+        NegZero = -0.0,
+        PosZero = Mod:run(PosZero, padding, NegZero),
+        NegZero = Mod:run(NegZero, padding, PosZero),
+
         less = Mod:run({ordering,1}, padding, {ordering,2}),
         greater = Mod:run({ordering,2}, padding, {ordering,1})
     after
@@ -327,7 +349,44 @@ ordering_comparison_near_match(Config) ->
         less = Mod:near_match({ordering,1}, padding, {ordering,2}),
         equal = Mod:near_match({ordering,1}, padding, {ordering,1.0}),
         greater = Mod:near_match({ordering,2}, padding, {ordering,1}),
-        unexpected = Mod:near_match({ordering,1}, not_padding, {ordering,2})
+        unexpected = Mod:near_match({ordering,1}, not_padding, {ordering,2}),
+
+        less = Mod:near_changed(1, 0, 2),
+        greater = Mod:near_changed(1, 0, 1),
+        equal = Mod:near_changed(2, 2, 1),
+        greater = Mod:near_changed_rhs(1, 1, 2),
+        equal = Mod:near_same_order(2, padding, 1),
+        less = Mod:near_same_order(1, padding, 2),
+        less = Mod:near_intervening(1, padding, 2),
+        greater = Mod:near_intervening(2, padding, 1),
+        {intervening,1} = Mod:near_intervening(1, padding, 1)
+    after
+        true = code:delete(Mod),
+        false = code:purge(Mod)
+    end,
+
+    ok.
+
+ordering_comparison_registers(Config) ->
+    DataDir = proplists:get_value(data_dir, Config),
+    Mod = ordering_comparison,
+    File = filename:join(DataDir, "ordering_comparison"),
+    {ok,Mod,Code} = compile:file(File, [from_asm,no_postopt,binary]),
+    {module,Mod} = code:load_binary(Mod, File, Code),
+
+    try
+        1 = Mod:run_xx(1, 1.0),
+        less = Mod:run_xx(1, 2),
+        greater = Mod:run_xx(2, 1),
+        {tuple,source} = Mod:run_same_x({tuple,source}),
+
+        1 = Mod:run_xy(1, 1.0),
+        less = Mod:run_xy(1, 2),
+        greater = Mod:run_xy(2, 1),
+
+        1 = Mod:run_yx(1, 1.0),
+        less = Mod:run_yx(1, 2),
+        greater = Mod:run_yx(2, 1)
     after
         true = code:delete(Mod),
         false = code:purge(Mod)
