@@ -36,7 +36,9 @@
          typed_comparison_ladders/1,comparison_non_ladder_shapes/1]).
 -export([lt_gt/2,gt_lt/2,strict_ladder/2,lt_gt_keep/2,
          swapped_ladder/2,changed_operand_ladder/3,call_ladder/2,
-         oracle_lt/2,oracle_gt/2]).
+         oracle_lt/2,oracle_gt/2,
+         typed_small_integer/2,typed_float/2,
+         typed_small_integer_64_range/2,shared_second_predecessor/3]).
 
 -import_record(beam_ssa, [b_set, b_var, b_literal]).
 
