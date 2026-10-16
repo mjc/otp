@@ -2281,13 +2281,11 @@ void BeamGlobalAssembler::emit_arith_compare_shared() {
     vmovsd(x86::xmm1, emit_boxed_val(boxed_ptr, sizeof(Eterm)));
     vucomisd(x86::xmm0, x86::xmm1);
 
-    /* `vucomisd` doesn't set the flags the same way `test` and
-     * friends do, so they need to be converted for jl/jge/jg to work.
-     * NOTE: jg is needed for min/2 to work.
+    /* `vucomisd` sets CF for less than or unordered. Subtracting that bit
+     * from the greater-than bit produces -1, 0, or +1 and sets signed flags.
      */
     a.seta(x86::al);
-    a.setb(x86::ah);
-    a.sub(x86::al, x86::ah);
+    a.sbb(x86::al, imm(0));
 
     emit_leave_frame();
     a.ret();
