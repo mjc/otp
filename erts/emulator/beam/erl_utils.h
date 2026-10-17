@@ -119,6 +119,10 @@ ERTS_GLB_INLINE Sint erts_cmp_flatmap_keys(Eterm, Eterm);
 Sint erts_cmp_compound(Eterm, Eterm, int, int);
 /* Compare two bitstrings. Both arguments must be bitstrings. */
 Sint erts_cmp_bitstrings(Eterm, Eterm);
+/* Compare two PIDs using PID serial, number, node-name, and creation order. */
+Sint erts_cmp_pids(Eterm, Eterm);
+/* Compare one internal and one external port by node order. */
+Sint erts_cmp_mixed_ports(Eterm, Eterm);
 
 #define CMP(A,B)                         erts_cmp(A,B,0,0)
 #define CMP_TERM(A,B)                    erts_cmp(A,B,1,0)

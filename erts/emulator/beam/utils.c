@@ -1639,6 +1639,92 @@ Sint compare_flatmap_atom_keys(const Eterm* a_keys,
 }
 
 
+/* Typed identifier comparisons for the JIT. Keep their ordering in sync
+ * with the separate identifier cases in erts_cmp_compound().
+ */
+static ERTS_INLINE Sint
+erts_cmp_node_order(ErlNode *a, ErlNode *b)
+{
+    Sint cmp;
+
+    if (a == b)
+        return 0;
+    if (a->sysname != b->sysname &&
+        (cmp = erts_cmp_atoms(a->sysname, b->sysname)) != 0)
+        return cmp;
+    ASSERT(a->creation != b->creation);
+    return a->creation < b->creation ? -1 : 1;
+}
+
+static ERTS_INLINE Sint
+erts_cmp_pid_ids(Eterm a, Eterm b)
+{
+    ErlNode *anode, *bnode;
+    Uint32 anum, aser, bnum, bser;
+
+    ASSERT(is_pid(a));
+    ASSERT(is_pid(b));
+
+    if (is_internal_pid(a)) {
+        anum = internal_pid_number(a);
+        aser = internal_pid_serial(a);
+        anode = erts_this_node;
+    }
+    else {
+        anum = external_pid_number(a);
+        aser = external_pid_serial(a);
+        anode = external_pid_node(a);
+    }
+    if (is_internal_pid(b)) {
+        bnum = internal_pid_number(b);
+        bser = internal_pid_serial(b);
+        bnode = erts_this_node;
+    }
+    else {
+        bnum = external_pid_number(b);
+        bser = external_pid_serial(b);
+        bnode = external_pid_node(b);
+    }
+
+    if (aser != bser)
+        return aser < bser ? -1 : 1;
+    if (anum != bnum)
+        return anum < bnum ? -1 : 1;
+    return erts_cmp_node_order(anode, bnode);
+}
+
+static ERTS_INLINE Sint
+erts_cmp_mixed_port_node_order(Eterm a, Eterm b)
+{
+    ErlNode *anode = is_internal_port(a) ? erts_this_node : external_port_node(a);
+    ErlNode *bnode = is_internal_port(b) ? erts_this_node : external_port_node(b);
+    return erts_cmp_node_order(anode, bnode);
+}
+
+Sint
+erts_cmp_mixed_ports(Eterm a, Eterm b)
+{
+    Sint cmp;
+
+    ASSERT(is_port(a));
+    ASSERT(is_port(b));
+    ASSERT(is_internal_port(a) != is_internal_port(b));
+
+    cmp = erts_cmp_mixed_port_node_order(a, b);
+    if (cmp != 0)
+        return cmp;
+    ERTS_INTERNAL_ERROR("different nodes compared equal");
+    return 0;
+}
+
+Sint
+erts_cmp_pids(Eterm a, Eterm b)
+{
+    ASSERT(is_pid(a));
+    ASSERT(is_pid(b));
+    return erts_cmp_pid_ids(a, b);
+}
+
 /*
  * Compare objects.
  * Returns 0 if equal, a negative value if a < b, or a positive number a > b.
