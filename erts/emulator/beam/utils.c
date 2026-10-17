@@ -2748,6 +2748,34 @@ not_equal:
 #undef CMP_NODES
 }
 
+Sint erts_cmp_bitstrings(Eterm a, Eterm b)
+{
+    Uint a_offset, a_size;
+    byte *a_base;
+    Uint b_offset, b_size;
+    byte *b_base;
+    int cmp;
+
+    ASSERT(is_bitstring(a));
+    ASSERT(is_bitstring(b));
+
+    if (is_same(a, b)) {
+        return 0;
+    }
+
+    ERTS_GET_BITSTRING(a, a_base, a_offset, a_size);
+    ERTS_GET_BITSTRING(b, b_base, b_offset, b_size);
+
+    cmp = erts_cmp_bits(a_base, a_offset,
+                        b_base, b_offset,
+                        MIN(a_size, b_size));
+    if (cmp != 0) {
+        return cmp;
+    }
+
+    return a_size < b_size ? -1 : (a_size == b_size ? 0 : 1);
+}
+
 
 Eterm
 store_external_or_ref_(Uint **hpp, ErlOffHeap* oh, Eterm ns)

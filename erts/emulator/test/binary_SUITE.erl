@@ -73,7 +73,7 @@
          big_binary_to_term/1,
          binary_to_term_trap_crash/1,
 	 otp_5484/1,otp_5933/1,
-	 ordering/1,unaligned_order/1,gc_test/1,
+	 ordering/1,unaligned_order/1,comparison_paths/1,gc_test/1,
 	 bit_sized_binary_sizes/1,
 	 otp_6817/1,deep/1,
          robustness/1,otp_8117/1,
@@ -111,7 +111,7 @@ all() ->
      term_to_iovec, more_bad_terms,
      unsorted_map_in_map,
      otp_5484, otp_5933,
-     ordering, unaligned_order, gc_test,
+     ordering, unaligned_order, comparison_paths, gc_test,
      bit_sized_binary_sizes, otp_6817, otp_8117, deep,
      robustness, otp_8180, trapping, large,
      error_after_yield, cmp_old_impl,
@@ -1600,6 +1600,117 @@ unaligned_order(Config) when is_list(Config) ->
     [test_unaligned_order(I, J) || I <- L, J <- L], 
     ok.
 
+comparison_paths(_Config) ->
+    Lengths = [0,1,7,8,9,511,512,513,519,520],
+    Samples = lists:append([bitstring_samples(N) || N <- Lengths]),
+    Ops = ['==', '/=', '=:=', '=/=', '<', '=<', '>', '>='],
+
+    lists:foreach(
+      fun(A) ->
+              lists:foreach(
+                fun(B) ->
+                        Cmp = bit_list_order(bit_list(A), bit_list(B)),
+                        Cmp = bitstring_order_guard(A, B),
+                        check_relops(Ops, A, B, Cmp)
+                end, Samples)
+      end, Samples),
+
+    BoundaryPairs = [{<<0:512>>, <<0:511,1:1>>},
+                     {<<0:512>>, <<0:520>>},
+                     {<<1:512>>, <<0:512>>},
+                     {<<0:520>>, <<0:519,1:1>>},
+                     {<<0:512,0:1>>, <<0:512,1:1>>},
+                     {<<0:511>>, <<0:513>>}],
+    lists:foreach(fun check_unaligned_bitstring_pair/1, BoundaryPairs),
+
+    Copied65 = binary:copy(<<0:520>>),
+    Copied65Again = binary:copy(Copied65),
+    NestedPairs = [{Copied65, Copied65Again},
+                   {<<0:7>>, <<0:6,1:1>>},
+                   {<<>>, <<0:1>>},
+                   {<<0:512>>, <<0:520>>},
+                   {<<1:520>>, <<0:520>>},
+                   {<<0:513>>, <<0:512,1:1>>}],
+    lists:foreach(fun check_nested_bitstring_order/1, NestedPairs),
+    ok.
+
+bitstring_samples(0) ->
+    [<<>>];
+bitstring_samples(N) ->
+    [<<0:N>>, <<1:1,0:(N-1)>>, <<0:(N-1),1:1>>].
+
+bit_list(<<>>) ->
+    [];
+bit_list(<<Bit:1, Rest/bitstring>>) ->
+    [Bit|bit_list(Rest)].
+
+bit_list_order([], []) -> 0;
+bit_list_order([], [_|_]) -> -1;
+bit_list_order([_|_], []) -> 1;
+bit_list_order([A|_], [B|_]) when A < B -> -1;
+bit_list_order([A|_], [B|_]) when A > B -> 1;
+bit_list_order([_|As], [_|Bs]) -> bit_list_order(As, Bs).
+
+bitstring_order_guard(A, B) when A < B -> -1;
+bitstring_order_guard(A, B) when A > B -> 1;
+bitstring_order_guard(A, B) when A =:= B -> 0;
+bitstring_order_guard(_, _) -> erlang:error(unordered_bitstrings).
+
+check_relops(Ops, A, B, Cmp) ->
+    lists:foreach(
+      fun(Op) ->
+              Expected = expected_relop(Op, Cmp),
+              Expected = apply(erlang, Op, [A, B])
+      end, Ops).
+
+check_unaligned_bitstring_pair({A, B}) ->
+    Cmp = bit_list_order(bit_list(A), bit_list(B)),
+    lists:foreach(
+      fun(OffsetA) ->
+              lists:foreach(
+                fun(OffsetB) ->
+                        UnalignedA = unaligned_sub_bin(A, OffsetA),
+                        UnalignedB = unaligned_sub_bin(B, OffsetB),
+                        Cmp = bit_list_order(bit_list(UnalignedA),
+                                             bit_list(UnalignedB)),
+                        Cmp = bitstring_order_guard(UnalignedA, UnalignedB),
+                        check_relops(
+                          ['==', '/=', '=:=', '=/=', '<', '=<', '>', '>='],
+                          UnalignedA, UnalignedB, Cmp)
+                end, lists:seq(0, 7))
+      end, lists:seq(0, 7)),
+    ok.
+
+check_nested_bitstring_order({A, B}) ->
+    Cmp = bit_list_order(bit_list(A), bit_list(B)),
+    Cmp = generic_term_order([A], [B]),
+    Cmp = generic_term_order({A}, {B}),
+    Cmp = generic_term_order(#{key => A}, #{key => B}),
+    Cmp = generic_term_order(#{A => value}, #{B => value}),
+    check_nested_relops([A], [B], Cmp),
+    check_nested_relops({A}, {B}, Cmp),
+    check_nested_relops(#{key => A}, #{key => B}, Cmp),
+    check_nested_relops(#{A => value}, #{B => value}, Cmp),
+    ok.
+
+check_nested_relops(A, B, Cmp) ->
+    check_relops(['==', '/=', '=:=', '=/=', '<', '=<', '>', '>='],
+                 A, B, Cmp).
+
+generic_term_order(A, B) when A < B -> -1;
+generic_term_order(A, B) when A > B -> 1;
+generic_term_order(A, B) when A =:= B -> 0;
+generic_term_order(_, _) -> erlang:error(unordered_terms).
+
+expected_relop('==', Cmp) -> Cmp =:= 0;
+expected_relop('/=', Cmp) -> Cmp =/= 0;
+expected_relop('=:=', Cmp) -> Cmp =:= 0;
+expected_relop('=/=', Cmp) -> Cmp =/= 0;
+expected_relop('<', Cmp) -> Cmp < 0;
+expected_relop('=<', Cmp) -> Cmp =< 0;
+expected_relop('>', Cmp) -> Cmp > 0;
+expected_relop('>=', Cmp) -> Cmp >= 0.
+
 test_unaligned_order(I, J) ->
     Align = {I,J},
     io:format("~p ~p", [I,J]),
@@ -2302,9 +2413,9 @@ unaligned_sub_bin(Bin, 0) -> Bin;
 unaligned_sub_bin(Bin0, Offs) ->
     F = rand:uniform(256),
     Roffs = 8-Offs,
-    Bin1 = <<F:Offs,Bin0/binary,F:Roffs>>,
-    Sz = size(Bin0),
-    <<_:Offs,Bin:Sz/binary,_:Roffs>> = id(Bin1),
+    Bin1 = <<F:Offs,Bin0/bitstring,F:Roffs>>,
+    BitSz = bit_size(Bin0),
+    <<_:Offs,Bin:BitSz/bitstring,_:Roffs>> = id(Bin1),
     Bin.
 
 id(I) -> I.

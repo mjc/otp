@@ -29,7 +29,11 @@
          bsl_bsr/1,logical/1,t_not/1,relop_simple/1,relop/1,
          complex_relop/1,unsafe_fusing/1,
          range_tests/1,combined_relops/1,typed_relop/1,
-         term_equivalence/1,is_in_range/1]).
+         term_equivalence/1,atom_ordering/1,mixed_small_float/1,
+         small_boxed_ordering/1,
+         cons_boxed_ordering/1,
+         list_small_head_ordering/1,
+         is_in_range/1]).
 
 -import(lists, [foldl/3,flatmap/2]).
 
@@ -41,6 +45,8 @@ all() ->
     [bsl_bsr, logical, t_not, relop_simple, relop,
      complex_relop, unsafe_fusing, range_tests,
      combined_relops, typed_relop, term_equivalence,
+     atom_ordering, mixed_small_float, small_boxed_ordering,
+     cons_boxed_ordering, list_small_head_ordering,
      is_in_range].
 
 %% Test the bsl and bsr operators.
@@ -1197,6 +1203,318 @@ term_equivalence(_Config) ->
      A <- Floats, B <- Floats],
 
     ok.
+
+atom_ordering(_Config) ->
+    Names = [[], [0], [$a,0,$b], "abc", "abc" ++ [0],
+             "abc" ++ [1], "abc" ++ [2], "abcd", "abc" ++ [127],
+             "abc" ++ [128], "abc" ++ [16#E9], "abc" ++ [16#100],
+             "Elixir.Foo", "Elixir.Bar", "Elixir.Baz",
+             lists:duplicate(63, $a) ++ [$b],
+             lists:duplicate(64, $a),
+             lists:duplicate(64, $a) ++ [$b],
+             lists:duplicate(254, $a) ++ [$b],
+             lists:duplicate(255, $a),
+             lists:duplicate(254, 16#1F600) ++ [16#1F600],
+             lists:duplicate(254, 16#1F600) ++ [16#1F601],
+             [16#7F], [16#80], [16#E9], [16#100]],
+    Atoms = [list_to_atom(Name) || Name <- Names],
+    Ops = ['==', '/=', '=:=', '=/=', '<', '=<', '>', '>='],
+
+    lists:foreach(
+      fun(A) ->
+              lists:foreach(
+                fun(B) ->
+                        Cmp = atom_name_order(atom_to_list(A),
+                                              atom_to_list(B)),
+                        Cmp = atom_order_guard(A, B),
+                        check_relops(Ops, A, B, Cmp)
+                end, Atoms)
+      end, Atoms),
+
+    NestedPairs = [{list_to_atom("abc"), list_to_atom("abc")},
+                   {list_to_atom("abc"), list_to_atom("abc" ++ [0])},
+                   {list_to_atom("abc" ++ [0]), list_to_atom("abc" ++ [1])},
+                   {list_to_atom("Elixir.Bar"), list_to_atom("Elixir.Baz")},
+                   {list_to_atom(lists:duplicate(64, $a)),
+                    list_to_atom(lists:duplicate(64, $a) ++ [$b])},
+                   {list_to_atom([16#7F]), list_to_atom([16#80])}],
+    lists:foreach(fun check_nested_atom_order/1, NestedPairs),
+    ok.
+
+atom_name_order([], []) -> 0;
+atom_name_order([], [_|_]) -> -1;
+atom_name_order([_|_], []) -> 1;
+atom_name_order([A|_], [B|_]) when A < B -> -1;
+atom_name_order([A|_], [B|_]) when A > B -> 1;
+atom_name_order([_|As], [_|Bs]) -> atom_name_order(As, Bs).
+
+atom_order_guard(A, B) when A < B -> -1;
+atom_order_guard(A, B) when A > B -> 1;
+atom_order_guard(A, B) when A =:= B -> 0;
+atom_order_guard(_, _) -> erlang:error(unordered_atoms).
+
+check_nested_atom_order({A, B}) ->
+    Cmp = atom_name_order(atom_to_list(A), atom_to_list(B)),
+    Cmp = generic_term_order([A], [B]),
+    Cmp = generic_term_order({A}, {B}),
+    Cmp = generic_term_order(#{key => A}, #{key => B}),
+    Cmp = generic_term_order(#{A => value}, #{B => value}),
+    ok.
+
+generic_term_order(A, B) when A < B -> -1;
+generic_term_order(A, B) when A > B -> 1;
+generic_term_order(A, B) when A =:= B -> 0;
+generic_term_order(_, _) -> erlang:error(unordered_terms).
+
+check_relops(Ops, A, B, Cmp) ->
+    lists:foreach(
+      fun(Op) ->
+              Expected = expected_relop(Op, Cmp),
+              Expected = apply(erlang, Op, [A, B])
+      end, Ops).
+
+expected_relop('==', Cmp) -> Cmp =:= 0;
+expected_relop('/=', Cmp) -> Cmp =/= 0;
+expected_relop('=:=', Cmp) -> Cmp =:= 0;
+expected_relop('=/=', Cmp) -> Cmp =/= 0;
+expected_relop('<', Cmp) -> Cmp < 0;
+expected_relop('=<', Cmp) -> Cmp =< 0;
+expected_relop('>', Cmp) -> Cmp > 0;
+expected_relop('>=', Cmp) -> Cmp >= 0.
+
+mixed_small_float(_Config) ->
+    Two53 = 1 bsl 53,
+    MaxSmall = (1 bsl 59) - 1,
+    MinSmall = -(1 bsl 59),
+    <<PosZero/float>> = <<0:1,0:63>>,
+    <<NegZero/float>> = <<1:1,0:63>>,
+    <<PosSubnormal/float>> = <<0:63,1:1>>,
+    <<NegSubnormal/float>> = <<1:1,0:62,1:1>>,
+    Pairs = [{Two53 + 1, float(Two53), 1},
+             {Two53 - 1, float(Two53), -1},
+             {-Two53 - 1, float(-Two53), -1},
+             {-Two53 + 1, float(-Two53), 1},
+             {Two53 + 1, float(Two53 + 2), -1},
+             {-Two53 - 1, float(-Two53 - 2), 1},
+             {MaxSmall, float(MaxSmall), -1},
+             {MinSmall, float(MinSmall), 0},
+             {MaxSmall, float(1 bsl 60), -1},
+             {MinSmall, float(-(1 bsl 60)), 1},
+             {42, 42.5, -1},
+             {42, 41.5, 1},
+             {0, PosSubnormal, -1},
+             {0, NegSubnormal, 1},
+             {0, PosZero, 0},
+             {0, NegZero, 0},
+             {1, 1.0, 0}],
+    lists:foreach(fun check_mixed_small_float_pair/1, Pairs),
+    ok.
+
+check_mixed_small_float_pair({Small, Float, Expected}) ->
+    Expected = mixed_small_float_guard(Small, Float),
+    ReverseExpected = -Expected,
+    ReverseExpected = mixed_small_float_guard(Float, Small),
+    check_mixed_small_float_ops(Small, Float, Expected),
+    check_mixed_small_float_ops(Float, Small, ReverseExpected),
+    check_mixed_small_float_minmax(Small, Float, Expected),
+    check_mixed_small_float_minmax(Float, Small, ReverseExpected).
+
+mixed_small_float_guard(A, B) when A < B -> -1;
+mixed_small_float_guard(A, B) when A > B -> 1;
+mixed_small_float_guard(A, B) when A == B -> 0;
+mixed_small_float_guard(_, _) -> erlang:error(unordered_numbers).
+
+check_mixed_small_float_ops(A, B, Cmp) ->
+    Ops = ['==', '/=', '=:=', '=/=', '<', '=<', '>', '>='],
+    lists:foreach(
+      fun(Op) ->
+              Expected = expected_mixed_small_float_op(Op, Cmp),
+              Expected = apply(erlang, Op, [A, B])
+      end, Ops).
+
+expected_mixed_small_float_op('==', Cmp) -> Cmp =:= 0;
+expected_mixed_small_float_op('/=', Cmp) -> Cmp =/= 0;
+expected_mixed_small_float_op('=:=', _Cmp) -> false;
+expected_mixed_small_float_op('=/=', _Cmp) -> true;
+expected_mixed_small_float_op('<', Cmp) -> Cmp < 0;
+expected_mixed_small_float_op('=<', Cmp) -> Cmp =< 0;
+expected_mixed_small_float_op('>', Cmp) -> Cmp > 0;
+expected_mixed_small_float_op('>=', Cmp) -> Cmp >= 0.
+
+check_mixed_small_float_minmax(A, B, Cmp) ->
+    Expected = case Cmp of
+                   -1 -> {A, B};
+                   0 -> {A, A};
+                   1 -> {B, A}
+               end,
+    Expected = {erlang:min(A, B), erlang:max(A, B)}.
+
+small_boxed_ordering(_Config) ->
+    SmallBits = erlang:system_info(wordsize) * 8 - 4,
+    MaxSmall = (1 bsl (SmallBits - 1)) - 1,
+    MinSmall = -(1 bsl (SmallBits - 1)),
+    Smalls = [MinSmall, MinSmall + 1, -1, 0, 1, MaxSmall - 1, MaxSmall],
+    NegativeBigs = [MinSmall - 1, -(1 bsl 80)],
+    PositiveBigs = [MaxSmall + 1, 1 bsl 80],
+    NegativePairs = [{Small, Big, 1} || Small <- Smalls,
+                                        Big <- NegativeBigs],
+    PositivePairs = [{Small, Big, -1} || Small <- Smalls,
+                                         Big <- PositiveBigs],
+    lists:foreach(fun check_small_boxed_big_pair/1,
+                  NegativePairs ++ PositivePairs),
+    LocalFun = fun(X) -> X end,
+    ExternalFun = fun erlang:length/1,
+    Parent = binary:copy(<<42>>, 96),
+    ParentSize = byte_size(Parent),
+    true = ParentSize > 64,
+    SubBinary = binary:part(Parent, 1, 65),
+    65 = byte_size(SubBinary),
+    ParentSize = binary:referenced_byte_size(SubBinary),
+    BoxedTerms = [{}, {boxed}, #{}, #{key => value}, make_ref(),
+                  <<1:1>>, Parent, SubBinary,
+                  LocalFun, ExternalFun],
+    lists:foreach(
+      fun(Small) ->
+              lists:foreach(
+                fun(Boxed) -> check_small_boxed_term(Small, Boxed) end,
+                BoxedTerms)
+      end, Smalls),
+    ok.
+
+check_small_boxed_big_pair({Small, Big, Expected}) ->
+    Expected = mixed_small_float_guard(Small, Big),
+    ReverseExpected = -Expected,
+    ReverseExpected = mixed_small_float_guard(Big, Small),
+    check_mixed_small_float_ops(Small, Big, Expected),
+    check_mixed_small_float_ops(Big, Small, ReverseExpected),
+    check_mixed_small_float_minmax(Small, Big, Expected),
+    check_mixed_small_float_minmax(Big, Small, ReverseExpected).
+
+check_small_boxed_term(Small, Boxed) ->
+    -1 = generic_term_order(Small, Boxed),
+    1 = generic_term_order(Boxed, Small),
+    check_mixed_small_float_ops(Small, Boxed, -1),
+    check_mixed_small_float_ops(Boxed, Small, 1),
+    check_mixed_small_float_minmax(Small, Boxed, -1),
+    check_mixed_small_float_minmax(Boxed, Small, 1).
+
+cons_boxed_ordering(_Config) ->
+    <<PosZero/float>> = <<0:1,0:63>>,
+    <<NegZero/float>> = <<1:1,0:63>>,
+    Parent = binary:copy(<<42>>, 96),
+    ParentSize = byte_size(Parent),
+    true = ParentSize > 64,
+    SubBinary65 = binary:part(Parent, 1, 65),
+    65 = byte_size(SubBinary65),
+    ParentSize = binary:referenced_byte_size(SubBinary65),
+    SubBinaries = [binary:part(Parent, Offset, Size)
+                   || Offset <- [0, 1, 7], Size <- [63, 64, 65]],
+    HeapBitstrings = [<<>>, <<1:1>>, <<1:7>>, <<1:8>>, <<1:9>>,
+                      <<0:63>>, <<0:64>>, <<0:65>>],
+    Bitstrings = HeapBitstrings ++ [Parent, SubBinary65] ++ SubBinaries,
+    HamtMap = maps:from_list([{K, K} || K <- lists:seq(1, 33)]),
+    LocalFun = fun(X) -> X end,
+    ExternalFun = fun erlang:length/1,
+    OtherBoxed = [PosZero, NegZero, 1.5, 1 bsl 80, -(1 bsl 80),
+                  {}, {tuple}, #{}, #{a => b}, HamtMap, make_ref(),
+                  LocalFun, ExternalFun],
+    ConsTerms = [[1, 2, 3], [1, 2 | tail], [[1], 2]],
+    lists:foreach(
+      fun(Cons) ->
+              lists:foreach(
+                fun(Bitstring) ->
+                        check_cons_boxed_pair(Cons, Bitstring, -1)
+                end, Bitstrings),
+              lists:foreach(
+                fun(Boxed) ->
+                        check_cons_boxed_pair(Cons, Boxed, 1)
+                end, OtherBoxed)
+      end, ConsTerms),
+    ok.
+
+check_cons_boxed_pair(Cons, Boxed, Expected) ->
+    Expected = generic_term_order(Cons, Boxed),
+    ReverseExpected = -Expected,
+    ReverseExpected = generic_term_order(Boxed, Cons),
+    check_relops(['==', '/=', '=:=', '=/=', '<', '=<', '>', '>='],
+                 Cons, Boxed, Expected),
+    check_relops(['==', '/=', '=:=', '=/=', '<', '=<', '>', '>='],
+                 Boxed, Cons, ReverseExpected),
+    check_mixed_small_float_minmax(Cons, Boxed, Expected),
+    check_mixed_small_float_minmax(Boxed, Cons, ReverseExpected).
+
+list_small_head_ordering(_Config) ->
+    SmallBits = erlang:system_info(wordsize) * 8 - 4,
+    MaxSmall = (1 bsl (SmallBits - 1)) - 1,
+    MinSmall = -(1 bsl (SmallBits - 1)),
+    SharedHead = {nested, [id(1), id(2)]},
+    Pairs = [{[MinSmall | tail], [MinSmall + 1 | tail], -1},
+             {[MinSmall | tail], [MaxSmall | tail], -1},
+             {[MaxSmall - 1 | tail], [MaxSmall | tail], -1},
+             {[-1 | z], [0 | a], -1},
+             {[1, 2], [1, 3], -1},
+             {[1 | 0], [1.0 | 1], -1},
+             {[1 | 0], [1 | []], -1},
+             {[1 | []], [1 | [2]], -1},
+             {[SharedHead | alpha], [SharedHead | beta], -1},
+             {[{a} | tail], [{b} | tail], -1},
+             {[[a] | tail], [[b] | tail], -1},
+             {[alpha, beta], [alpha, gamma], -1}],
+    lists:foreach(fun check_list_small_head_pair/1, Pairs),
+
+    SharedTail = [id(2), id(3)],
+    SharedTailA = [id(17) | SharedTail],
+    SharedTailB = [id(17) | SharedTail],
+    false = erts_debug:same(SharedTailA, SharedTailB),
+    check_list_small_head_pair({SharedTailA, SharedTailB, 0}),
+    true = erts_debug:same(erlang:min(SharedTailA, SharedTailB),
+                           SharedTailA),
+    true = erts_debug:same(erlang:max(SharedTailA, SharedTailB),
+                           SharedTailA),
+
+    check_arithmetic_equal_list_tail([id(17) | 1], [id(17) | 1.0]),
+
+    %% Separately allocated equal lists make min/max tie identity observable.
+    EqualA = [id(17), id(tail)],
+    EqualB = [id(17), id(tail)],
+    0 = generic_term_order(EqualA, EqualB),
+    0 = generic_term_order(EqualB, EqualA),
+    check_relops(['==', '/=', '=:=', '=/=', '<', '=<', '>', '>='],
+                 EqualA, EqualB, 0),
+    check_relops(['==', '/=', '=:=', '=/=', '<', '=<', '>', '>='],
+                 EqualB, EqualA, 0),
+    true = erts_debug:same(erlang:min(EqualA, EqualB), EqualA),
+    true = erts_debug:same(erlang:max(EqualA, EqualB), EqualA),
+    true = erts_debug:same(erlang:min(EqualB, EqualA), EqualB),
+    true = erts_debug:same(erlang:max(EqualB, EqualA), EqualB),
+    ok.
+
+check_list_small_head_pair({A, B, ExpectedOrder}) ->
+    ExpectedOrder = generic_term_order(A, B),
+    ReverseExpectedOrder = -ExpectedOrder,
+    ReverseExpectedOrder = generic_term_order(B, A),
+    Ops = ['==', '/=', '=:=', '=/=', '<', '=<', '>', '>='],
+    check_relops(Ops, A, B, ExpectedOrder),
+    check_relops(Ops, B, A, ReverseExpectedOrder),
+    check_mixed_small_float_minmax(A, B, ExpectedOrder),
+    check_mixed_small_float_minmax(B, A, ReverseExpectedOrder).
+
+check_arithmetic_equal_list_tail(A, B) ->
+    0 = list_arithmetic_order_guard(A, B),
+    0 = list_arithmetic_order_guard(B, A),
+    Expected = [true, false, false, true, false, true, false, true],
+    Ops = ['==', '/=', '=:=', '=/=', '<', '=<', '>', '>='],
+    Expected = [apply(erlang, Op, [A, B]) || Op <- Ops],
+    Expected = [apply(erlang, Op, [B, A]) || Op <- Ops],
+    true = erts_debug:same(erlang:min(A, B), A),
+    true = erts_debug:same(erlang:max(A, B), A),
+    true = erts_debug:same(erlang:min(B, A), B),
+    true = erts_debug:same(erlang:max(B, A), B).
+
+list_arithmetic_order_guard(A, B) when A < B -> -1;
+list_arithmetic_order_guard(A, B) when A > B -> 1;
+list_arithmetic_order_guard(A, B) when A == B -> 0;
+list_arithmetic_order_guard(_, _) -> erlang:error(unordered_lists).
 
 cmp_float(A0, B0) ->
     A = float_comparable(A0),

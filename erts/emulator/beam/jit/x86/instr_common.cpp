@@ -2246,10 +2246,17 @@ void BeamModuleAssembler::emit_is_ne(const ArgLabel &Fail,
 }
 
 void BeamGlobalAssembler::emit_arith_compare_shared() {
-    Label atom_compare, generic_compare;
+    Label atom_compare, generic_compare, maybe_bitstrings, maybe_lists;
+    Label numeric_compare;
+    Label nonfloat_boxed_compare, cons_boxed_compare;
 
     atom_compare = a.new_label();
     generic_compare = a.new_label();
+    maybe_bitstrings = a.new_label();
+    maybe_lists = a.new_label();
+    numeric_compare = a.new_label();
+    nonfloat_boxed_compare = a.new_label();
+    cons_boxed_compare = a.new_label();
 
     emit_enter_frame();
 
@@ -2263,16 +2270,11 @@ void BeamGlobalAssembler::emit_arith_compare_shared() {
     a.short_().jne(atom_compare);
 
     x86::Gp boxed_ptr = emit_ptr_val(ARG3, ARG1);
-    a.mov(ARG3, emit_boxed_val(boxed_ptr));
-    boxed_ptr = emit_ptr_val(ARG5, ARG2);
-    a.mov(ARG5, emit_boxed_val(boxed_ptr));
-    a.and_(ARG3d, imm(_TAG_HEADER_MASK));
-    a.and_(ARG5d, imm(_TAG_HEADER_MASK));
-    a.sub(ARG3d, imm(_TAG_HEADER_FLOAT));
-    a.sub(ARG5d, imm(_TAG_HEADER_FLOAT));
-    a.or_(ARG3d, ARG5d);
+    a.cmp(emit_boxed_val(boxed_ptr), imm(HEADER_FLONUM));
+    a.jne(maybe_bitstrings);
 
-    /* NOTE: Short won't reach if JIT_HARD_DEBUG is defined. */
+    boxed_ptr = emit_ptr_val(ARG5, ARG2);
+    a.cmp(emit_boxed_val(boxed_ptr), imm(HEADER_FLONUM));
     a.jne(generic_compare);
 
     boxed_ptr = emit_ptr_val(ARG1, ARG1);
@@ -2281,13 +2283,11 @@ void BeamGlobalAssembler::emit_arith_compare_shared() {
     vmovsd(x86::xmm1, emit_boxed_val(boxed_ptr, sizeof(Eterm)));
     vucomisd(x86::xmm0, x86::xmm1);
 
-    /* `vucomisd` doesn't set the flags the same way `test` and
-     * friends do, so they need to be converted for jl/jge/jg to work.
-     * NOTE: jg is needed for min/2 to work.
+    /* `vucomisd` sets CF for less than or unordered. Subtracting that bit
+     * from the greater-than bit produces -1, 0, or +1 and sets signed flags.
      */
     a.seta(x86::al);
-    a.setb(x86::ah);
-    a.sub(x86::al, x86::ah);
+    a.sbb(x86::al, imm(0));
 
     emit_leave_frame();
     a.ret();
@@ -2302,15 +2302,45 @@ void BeamGlobalAssembler::emit_arith_compare_shared() {
         a.sub(ARG3d, imm(_TAG_IMMED2_ATOM));
         a.sub(ARG5d, imm(_TAG_IMMED2_ATOM));
         a.or_(ARG3d, ARG5d);
-        a.jne(generic_compare);
+        a.jne(numeric_compare);
 
+        ERTS_CT_ASSERT(offsetof(Atom, slot) == 0);
+
+        /* Resolve both atoms and compare their ordinal prefixes directly. */
+        a.mov(ARG3, imm(&erts_atom_table));
+        a.mov(ARG3, x86::qword_ptr(ARG3, offsetof(IndexTable, seg_table)));
+
+        a.shr(ARG1, imm(_TAG_IMMED2_SIZE));
+        a.mov(ARG5, ARG1);
+        a.shr(ARG5, imm(INDEX_PAGE_SHIFT));
+        a.and_(ARG1d, imm(INDEX_PAGE_MASK));
+        a.mov(ARG4, x86::qword_ptr(ARG3, ARG5, 3));
+        a.mov(ARG1, x86::qword_ptr(ARG4, ARG1, 3));
+
+        a.shr(ARG2, imm(_TAG_IMMED2_SIZE));
+        a.mov(ARG5, ARG2);
+        a.shr(ARG5, imm(INDEX_PAGE_SHIFT));
+        a.and_(ARG2d, imm(INDEX_PAGE_MASK));
+        a.mov(ARG4, x86::qword_ptr(ARG3, ARG5, 3));
+        a.mov(ARG2, x86::qword_ptr(ARG4, ARG2, 3));
+
+        a.mov(ARG3d, x86::dword_ptr(ARG1, offsetof(Atom, ord0)));
+        a.cmp(ARG3d, x86::dword_ptr(ARG2, offsetof(Atom, ord0)));
+        Label atom_suffix = a.new_label();
+        a.je(atom_suffix);
+
+        emit_leave_frame();
+        a.ret();
+
+        a.bind(atom_suffix);
         emit_enter_runtime();
 
-        runtime_call<int (*)(Eterm, Eterm), erts_cmp_atoms>();
+        runtime_call<int (*)(const Atom *, const Atom *),
+                     erts_cmp_atom_names_suffix>();
 
         emit_leave_runtime();
 
-        /* !! erts_cmp_atoms returns int, not Sint !! */
+        /* The suffix helper returns int, not Sint. */
         a.test(RETd, RETd);
 
         emit_leave_frame();
@@ -2330,6 +2360,194 @@ void BeamGlobalAssembler::emit_arith_compare_shared() {
 
         a.test(RET, RET);
 
+        emit_leave_frame();
+        a.ret();
+    }
+
+    a.bind(maybe_bitstrings);
+    {
+        /* The first non-float boxed term may be a bitstring. */
+        x86::Gp boxed_ptr = emit_ptr_val(ARG3, ARG1);
+        a.mov(RETd, emit_boxed_val(boxed_ptr, 0, sizeof(Uint32)));
+        a.and_(RETd, imm(_BITSTRING_TAG_MASK));
+        a.cmp(RETd, imm(_TAG_HEADER_HEAP_BITS));
+        a.jne(generic_compare);
+
+        boxed_ptr = emit_ptr_val(ARG3, ARG2);
+        a.mov(RETd, emit_boxed_val(boxed_ptr, 0, sizeof(Uint32)));
+        a.and_(RETd, imm(_BITSTRING_TAG_MASK));
+        a.cmp(RETd, imm(_TAG_HEADER_HEAP_BITS));
+        a.jne(generic_compare);
+
+        emit_enter_runtime();
+        comment("erts_cmp_bitstrings(X, Y);");
+        runtime_call<Sint (*)(Eterm, Eterm), erts_cmp_bitstrings>();
+        emit_leave_runtime();
+
+        a.test(RET, RET);
+        emit_leave_frame();
+        a.ret();
+    }
+
+    a.bind(numeric_compare);
+    {
+        ERTS_CT_ASSERT((TAG_PRIMARY_BOXED & 1) == 0);
+        ERTS_CT_ASSERT((TAG_PRIMARY_LIST & 1) == 1);
+        ERTS_CT_ASSERT((TAG_PRIMARY_IMMED1 & 1) == 1);
+        ERTS_CT_ASSERT((_TAG_IMMED2_ATOM & 1) == 1);
+
+        /* The float check above ruled out two boxed terms. In this residual,
+         * bit zero is set exactly when one operand is boxed; unboxed types
+         * have the same low-bit value as the atom tag we subtracted.
+         */
+        a.test(ARG3.r8(), imm(1));
+        a.je(maybe_lists);
+
+        /* Arrange the small in ARG3 and the boxed candidate in ARG4. Keep the
+         * original terms in ARG1/ARG2 for the generic fallback.
+         */
+        a.mov(ARG3, ARG1);
+        a.mov(ARG4, ARG2);
+        Label operands_oriented = a.new_label();
+        a.test(ARG1.r8(), imm(1));
+        a.jne(operands_oriented);
+        a.mov(ARG5, ARG3);
+        a.mov(ARG3, ARG4);
+        a.mov(ARG4, ARG5);
+        a.bind(operands_oriented);
+
+        a.mov(ARG5d, ARG3d);
+        a.and_(ARG5d, imm(_TAG_IMMED1_MASK));
+        a.cmp(ARG5d, imm(_TAG_IMMED1_SMALL));
+        a.jne(cons_boxed_compare);
+        a.sar(ARG3, imm(_TAG_IMMED1_SIZE));
+
+        boxed_ptr = emit_ptr_val(ARG4, ARG4);
+        a.cmp(emit_boxed_val(boxed_ptr), imm(HEADER_FLONUM));
+        a.jne(nonfloat_boxed_compare);
+        vmovsd(x86::xmm0, emit_boxed_val(boxed_ptr, sizeof(Eterm)));
+
+        if (hasCpuFeature(CpuFeatures::X86::kAVX)) {
+            a.vcvtsi2sd(x86::xmm1, x86::xmm1, ARG3);
+        } else {
+            a.cvtsi2sd(x86::xmm1, ARG3);
+        }
+
+        Label small_left = a.new_label();
+        Label compared = a.new_label();
+        Label equal = a.new_label();
+        Label equal_small_left = a.new_label();
+
+        a.test(ARG1.r8(), imm(1));
+        a.jne(small_left);
+        vucomisd(x86::xmm0, x86::xmm1);
+        a.short_().jmp(compared);
+
+        a.bind(small_left);
+        vucomisd(x86::xmm1, x86::xmm0);
+
+        a.bind(compared);
+        a.jp(generic_compare);
+        a.je(equal);
+
+        /* Normalize ZF/CF from vucomisd into signed comparison flags. */
+        a.seta(x86::al);
+        a.sbb(x86::al, imm(0));
+        emit_leave_frame();
+        a.ret();
+
+        a.bind(equal);
+        /* The small-to-double conversion may have rounded a neighboring
+         * integer to this same float. Compare the original small to the
+         * float's exact integer value to resolve that tie.
+         */
+        a.cvttsd2si(ARG4, x86::xmm0);
+        a.test(ARG1.r8(), imm(1));
+        a.jne(equal_small_left);
+        a.cmp(ARG4, ARG3);
+        emit_leave_frame();
+        a.ret();
+
+        a.bind(equal_small_left);
+        a.cmp(ARG3, ARG4);
+        emit_leave_frame();
+        a.ret();
+    }
+
+    a.bind(nonfloat_boxed_compare);
+    {
+        ERTS_CT_ASSERT((_TAG_HEADER_NEG_BIG & _TAG_HEADER_MASK) ==
+                       _TAG_HEADER_NEG_BIG);
+
+        /* The float check failed. Among boxed terms, only negative bignums
+         * sort before a small integer; every other boxed term sorts after.
+         */
+        a.mov(RETd, emit_boxed_val(boxed_ptr, 0, sizeof(Uint32)));
+        a.and_(RETd, imm(_TAG_HEADER_MASK));
+        a.cmp(RETd, imm(_TAG_HEADER_NEG_BIG));
+        a.sete(x86::al);
+        a.xor_(x86::al, ARG1.r8());
+        a.and_(x86::al, imm(1));
+        a.neg(x86::al);
+        a.or_(x86::al, imm(1));
+        emit_leave_frame();
+        a.ret();
+    }
+
+    a.bind(cons_boxed_compare);
+    {
+        ERTS_CT_ASSERT((_TAG_HEADER_SUB_BITS & _BITSTRING_TAG_MASK) ==
+                       _TAG_HEADER_HEAP_BITS);
+
+        /* The unboxed term can use the cons ordering only if it really is a
+         * list cell. The masked header identifies heap and sub-bitstrings.
+         */
+        emit_is_cons(generic_compare, ARG3);
+        boxed_ptr = emit_ptr_val(ARG5, ARG4);
+        a.mov(RETd, emit_boxed_val(boxed_ptr, 0, sizeof(Uint32)));
+        a.and_(RETd, imm(_BITSTRING_TAG_MASK));
+        a.cmp(RETd, imm(_TAG_HEADER_HEAP_BITS));
+        a.setne(x86::al);
+        a.xor_(x86::al, ARG1.r8());
+        a.and_(x86::al, imm(1));
+        a.neg(x86::al);
+        a.or_(x86::al, imm(1));
+        emit_leave_frame();
+        a.ret();
+    }
+
+    a.bind(maybe_lists);
+    {
+        /* Both terms are unboxed. Only two cons cells can use this path. */
+        a.mov(ARG3d, ARG1d);
+        a.or_(ARG3d, ARG2d);
+        emit_is_cons(generic_compare, ARG3);
+
+        x86::Gp lhs_ptr = emit_ptr_val(ARG3, ARG1);
+        x86::Gp rhs_ptr = emit_ptr_val(ARG5, ARG2);
+        a.mov(ARG4, getCARRef(lhs_ptr));
+        a.mov(RET, getCARRef(rhs_ptr));
+
+        Label equal_list_heads = a.new_label();
+        a.cmp(ARG4, RET);
+        a.je(equal_list_heads);
+
+        /* Unequal heads can be compared directly when both are smalls. */
+        a.mov(ARG5d, ARG4d);
+        a.and_(ARG5d, RETd);
+        a.and_(ARG5d, imm(_TAG_IMMED1_MASK));
+        a.cmp(ARG5d, imm(_TAG_IMMED1_SMALL));
+        a.jne(generic_compare);
+
+        a.cmp(ARG4, RET);
+        emit_leave_frame();
+        a.ret();
+
+        a.bind(equal_list_heads);
+        a.mov(ARG1, getCDRRef(lhs_ptr));
+        a.mov(ARG2, getCDRRef(rhs_ptr));
+        a.cmp(ARG1, ARG2);
+        a.jne(generic_compare);
         emit_leave_frame();
         a.ret();
     }
@@ -2970,7 +3188,8 @@ void BeamModuleAssembler::emit_i_compare(ArgLabel const &FailGT,
         return;
     }
 
-    Label generic = a.new_label(), lt_done = a.new_label();
+    Label generic = a.new_label(), small = a.new_label(),
+          lt_done = a.new_label();
 
     mov_arg(ARG2, B); /* May clobber ARG1 */
     mov_arg(ARG1, A);
@@ -3006,10 +3225,12 @@ void BeamModuleAssembler::emit_i_compare(ArgLabel const &FailGT,
         return;
     }
 
-    if ((always_small(A) &&
-         always_one_of<BeamTypeId::Integer, BeamTypeId::AlwaysBoxed>(B)) ||
-        (always_small(B) &&
-         always_one_of<BeamTypeId::Integer, BeamTypeId::AlwaysBoxed>(A))) {
+    const bool small_boxed =
+            (always_small(A) &&
+             always_one_of<BeamTypeId::Integer, BeamTypeId::AlwaysBoxed>(B)) ||
+            (always_small(B) &&
+             always_one_of<BeamTypeId::Integer, BeamTypeId::AlwaysBoxed>(A));
+    if (small_boxed) {
         /* Only small integers can be immediate for these operands. */
         emit_is_not_boxed(generic, always_small(A) ? ARG2 : ARG1, dShort);
         preserve_cache([&]() {
@@ -3029,17 +3250,20 @@ void BeamModuleAssembler::emit_i_compare(ArgLabel const &FailGT,
         }
         a.and_(RETb, imm(_TAG_IMMED1_MASK));
         a.cmp(RETb, imm(_TAG_IMMED1_SMALL));
-        a.short_().jne(generic);
-
-        a.cmp(ARG1, ARG2);
-        a.jg(resolve_beam_label(FailGT));
-        a.short_().jmp(lt_done);
+        a.je(small);
     }
 
     a.bind(generic);
     safe_fragment_call(ga->get_arith_compare_shared());
     a.jg(resolve_beam_label(FailGT));
     a.je(resolve_beam_label(Equal));
+    if (!small_boxed) {
+        a.short_().jmp(lt_done);
+
+        a.bind(small);
+        a.cmp(ARG1, ARG2);
+        a.jg(resolve_beam_label(FailGT));
+    }
 
     a.bind(lt_done);
 }
