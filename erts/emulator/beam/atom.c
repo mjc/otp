@@ -116,6 +116,32 @@ const byte *erts_atom_get_name(const Atom *atom)
     return name;
 }
 
+int erts_cmp_atom_names_suffix(const Atom *aa, const Atom *bb)
+{
+    const byte *name_a;
+    const byte *name_b;
+    int len_a;
+    int len_b;
+    int diff;
+
+    ASSERT(aa->ord0 == bb->ord0);
+
+    len_a = aa->len - 3;
+    len_b = bb->len - 3;
+    name_a = &erts_atom_get_name(aa)[3];
+    name_b = &erts_atom_get_name(bb)[3];
+
+    if (len_a > 0 && len_b > 0) {
+        diff = sys_memcmp(name_a, name_b, MIN(len_a, len_b));
+
+        if (diff != 0) {
+            return diff;
+        }
+    }
+
+    return len_a - len_b;
+}
+
 static int 
 atom_cmp(Atom* tmpl, Atom* obj)
 {

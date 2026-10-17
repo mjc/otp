@@ -117,6 +117,8 @@ ERTS_GLB_INLINE int erts_cmp_atoms(Eterm a, Eterm b);
 ERTS_GLB_INLINE Sint erts_cmp_flatmap_keys(Eterm, Eterm);
 
 Sint erts_cmp_compound(Eterm, Eterm, int, int);
+/* Compare two bitstrings. Both arguments must be bitstrings. */
+Sint erts_cmp_bitstrings(Eterm, Eterm);
 
 #define CMP(A,B)                         erts_cmp(A,B,0,0)
 #define CMP_TERM(A,B)                    erts_cmp(A,B,1,0)

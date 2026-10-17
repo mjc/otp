@@ -66,6 +66,10 @@ ERTS_GLB_INLINE int erts_is_atom_str(const char *str, Eterm term, int is_latin1)
 ERTS_GLB_INLINE int erts_is_atom_index_ok(Uint ix);
 
 const byte *erts_atom_get_name(const Atom *atom);
+/* Compare name suffixes after the first three bytes; aa and bb must have the
+ * same ord0 value.
+ */
+int erts_cmp_atom_names_suffix(const Atom *aa, const Atom *bb);
 
 #if ERTS_GLB_INLINE_INCL_FUNC_DEF
 ERTS_GLB_INLINE Atom*
