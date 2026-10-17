@@ -2343,7 +2343,7 @@ void hashmap_iterator_init(ErtsWStack* s, Eterm node, int reverse) {
 		 (UWord)node);
 }
 
-Eterm* hashmap_iterator_next(ErtsWStack* s) {
+static ERTS_FORCE_INLINE Eterm* hashmap_iterator_next_impl(ErtsWStack* s) {
     Eterm node, *ptr, hdr;
     Uint32 sz;
     Uint idx;
@@ -2378,6 +2378,20 @@ Eterm* hashmap_iterator_next(ErtsWStack* s) {
 		break; /* and pop parent node */
         }
     }
+}
+
+Eterm* hashmap_iterator_next(ErtsWStack* s) {
+    return hashmap_iterator_next_impl(s);
+}
+
+hashmap_iterator_pair_t hashmap_iterator_next_pair(ErtsWStack* a,
+                                                    ErtsWStack* b) {
+    hashmap_iterator_pair_t pair;
+
+    pair.ap = hashmap_iterator_next_impl(a);
+    pair.bp = hashmap_iterator_next_impl(b);
+
+    return pair;
 }
 
 Eterm* hashmap_iterator_prev(ErtsWStack* s) {

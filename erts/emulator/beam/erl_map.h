@@ -115,6 +115,12 @@ int    erts_validate_and_sort_flatmap(flatmap_t* map);
 void   erts_usort_flatmap(flatmap_t* map);
 void   hashmap_iterator_init(struct ErtsWStack_* s, Eterm node, int reverse);
 Eterm* hashmap_iterator_next(struct ErtsWStack_* s);
+typedef struct {
+    Eterm *ap;
+    Eterm *bp;
+} hashmap_iterator_pair_t;
+hashmap_iterator_pair_t hashmap_iterator_next_pair(struct ErtsWStack_* a,
+                                                   struct ErtsWStack_* b);
 Eterm* hashmap_iterator_prev(struct ErtsWStack_* s);
 int    hashmap_key_hash_cmp(Eterm* ap, Eterm* bp);
 Eterm  erts_hashmap_from_array(ErtsHeapFactory*, Eterm *leafs, Uint n, int reject_dupkeys);

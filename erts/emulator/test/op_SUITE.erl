@@ -31,6 +31,7 @@
          range_tests/1,combined_relops/1,typed_relop/1,
          term_equivalence/1,atom_ordering/1,mixed_small_float/1,
          small_boxed_ordering/1,
+         hamt_comparison_paths/1,
          cons_boxed_ordering/1,
          list_small_head_ordering/1,
          is_in_range/1]).
@@ -46,7 +47,7 @@ all() ->
      complex_relop, unsafe_fusing, range_tests,
      combined_relops, typed_relop, term_equivalence,
      atom_ordering, mixed_small_float, small_boxed_ordering,
-     cons_boxed_ordering, list_small_head_ordering,
+     hamt_comparison_paths, cons_boxed_ordering, list_small_head_ordering,
      is_in_range].
 
 %% Test the bsl and bsr operators.
@@ -1397,6 +1398,87 @@ check_small_boxed_term(Small, Boxed) ->
     check_mixed_small_float_ops(Boxed, Small, 1),
     check_mixed_small_float_minmax(Small, Boxed, -1),
     check_mixed_small_float_minmax(Boxed, Small, 1).
+
+hamt_comparison_paths(_Config) ->
+    lists:foreach(fun check_hamt_comparison_size/1, [33, 64, 65, 127]),
+    ok.
+
+check_hamt_comparison_size(Size) ->
+    Keys = lists:seq(1, Size),
+    ReverseKeys = lists:reverse(Keys),
+    EqualA = maps:from_list([{K, K} || K <- Keys]),
+    EqualB = maps:from_list([{K, K} || K <- ReverseKeys]),
+    check_hamt_map_pair(EqualA, EqualB, 0, true),
+
+    ValuesA = maps:from_list([{K, 0} || K <- Keys]),
+    EarlyDiff = maps:from_list(
+                  [{K, case K of 1 -> 1; _ -> 0 end} || K <- Keys]),
+    LateDiff = maps:from_list(
+                 [{K, case K of Size -> 1; _ -> 0 end} || K <- Keys]),
+    check_hamt_map_pair(ValuesA, EarlyDiff, -1, false),
+    check_hamt_map_pair(ValuesA, LateDiff, -1, false),
+    EarlyGreater = maps:from_list(
+                      [{K, case K of 1 -> 1; _ -> 0 end} || K <- Keys]),
+    LateGreater = maps:from_list(
+                    [{K, case K of Size -> 1; _ -> 0 end} || K <- Keys]),
+    check_hamt_map_pair(EarlyGreater, LateGreater, 1, false),
+
+    ShiftedKeys = lists:seq(2, Size + 1),
+    DifferentKeys = maps:from_list([{K, K} || K <- ShiftedKeys]),
+    check_hamt_map_pair(EqualA, DifferentKeys, -1, false),
+
+    NumericEqual = maps:from_list(
+                     [{K, case K of Size -> 0.0; _ -> 0 end} || K <- Keys]),
+    check_hamt_map_pair(ValuesA, NumericEqual, 0, false),
+    ok.
+
+check_hamt_map_pair(A, B, ExpectedOrder, ExactEqual) ->
+    ExpectedOrder = map_order_guard(A, B),
+    ReverseExpectedOrder = -ExpectedOrder,
+    ReverseExpectedOrder = map_order_guard(B, A),
+    check_hamt_map_ops(A, B, ExpectedOrder, ExactEqual),
+    check_hamt_map_ops(B, A, -ExpectedOrder, ExactEqual),
+    Min = case ExpectedOrder of
+              -1 -> A;
+              0 -> A;
+              1 -> B
+          end,
+    Max = case ExpectedOrder of
+              -1 -> B;
+              0 -> A;
+              1 -> A
+          end,
+    Min = erlang:min(A, B),
+    Max = erlang:max(A, B),
+    case ExpectedOrder of
+        0 ->
+            true = erts_debug:same(erlang:min(A, B), A),
+            true = erts_debug:same(erlang:max(A, B), A);
+        _ ->
+            ok
+    end.
+
+map_order_guard(A, B) when A < B -> -1;
+map_order_guard(A, B) when A > B -> 1;
+map_order_guard(A, B) when A == B -> 0;
+map_order_guard(_, _) -> erlang:error(unordered_maps).
+
+check_hamt_map_ops(A, B, Cmp, ExactEqual) ->
+    Ops = ['==', '/=', '=:=', '=/=', '<', '=<', '>', '>='],
+    lists:foreach(
+      fun(Op) ->
+              Expected = expected_hamt_map_op(Op, Cmp, ExactEqual),
+              Expected = apply(erlang, Op, [A, B])
+      end, Ops).
+
+expected_hamt_map_op('==', Cmp, _Exact) -> Cmp =:= 0;
+expected_hamt_map_op('/=', Cmp, _Exact) -> Cmp =/= 0;
+expected_hamt_map_op('=:=', _Cmp, Exact) -> Exact;
+expected_hamt_map_op('=/=', _Cmp, Exact) -> not Exact;
+expected_hamt_map_op('<', Cmp, _Exact) -> Cmp < 0;
+expected_hamt_map_op('=<', Cmp, _Exact) -> Cmp =< 0;
+expected_hamt_map_op('>', Cmp, _Exact) -> Cmp > 0;
+expected_hamt_map_op('>=', Cmp, _Exact) -> Cmp >= 0.
 
 cons_boxed_ordering(_Config) ->
     <<PosZero/float>> = <<0:1,0:63>>,

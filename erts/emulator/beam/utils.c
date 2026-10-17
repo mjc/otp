@@ -2104,8 +2104,12 @@ tailrecur_ne:
                     IF_DEBUG(sp->is_hashmap = 1);
                     hashmap_iterator_init(&stack, a, 0);
                     hashmap_iterator_init(&b_stack, b, 0);
-                    sp->ap = hashmap_iterator_next(&stack);
-                    sp->bp = hashmap_iterator_next(&b_stack);
+                    {
+                        hashmap_iterator_pair_t pair =
+                                hashmap_iterator_next_pair(&stack, &b_stack);
+                        sp->ap = pair.ap;
+                        sp->bp = pair.bp;
+                    }
                     sp->cmp_res = 0;
                     ASSERT(sp->ap && sp->bp);
 
@@ -2573,8 +2577,12 @@ pop_next:
                     sp->min_key = CAR(sp->ap);
                 }
             case_HASHMAP_PHASE1_LOOP:
-                sp->ap = hashmap_iterator_next(&stack);
-                sp->bp = hashmap_iterator_next(&b_stack);
+                {
+                    hashmap_iterator_pair_t pair =
+                            hashmap_iterator_next_pair(&stack, &b_stack);
+                    sp->ap = pair.ap;
+                    sp->bp = pair.bp;
+                }
                 if (!sp->ap) {
                     /* end of maps with identical keys */
                     ASSERT(!sp->bp);  /* as we assume indentical map sizes */
@@ -2606,8 +2614,10 @@ pop_next:
                 ASSERT(sp->is_hashmap);
                 if (j == 0) {
                     /* keys are equal, skip them */
-                    sp->ap = hashmap_iterator_next(&stack);
-                    sp->bp = hashmap_iterator_next(&b_stack);
+                    hashmap_iterator_pair_t pair =
+                            hashmap_iterator_next_pair(&stack, &b_stack);
+                    sp->ap = pair.ap;
+                    sp->bp = pair.bp;
                     goto case_HASHMAP_PHASE2_LOOP;
                 }
                 /* fall through */
