@@ -2248,7 +2248,11 @@ void BeamModuleAssembler::emit_is_ne(const ArgLabel &Fail,
 void BeamGlobalAssembler::emit_arith_compare_shared() {
     Label atom_compare, generic_compare, maybe_bitstrings, maybe_lists;
     Label numeric_compare;
-    Label nonfloat_boxed_compare, cons_boxed_compare;
+    Label nonfloat_boxed_compare, cons_boxed_compare, atom_boxed_compare;
+    Label cons_boxed_header_compare, maybe_nil_boxed_compare;
+    Label maybe_pid_port_boxed_compare;
+    Label external_pid_boxed, external_port_boxed, cross_id_compare;
+    Label same_external_pid_compare, same_external_port_compare;
 
     atom_compare = a.new_label();
     generic_compare = a.new_label();
@@ -2257,6 +2261,15 @@ void BeamGlobalAssembler::emit_arith_compare_shared() {
     numeric_compare = a.new_label();
     nonfloat_boxed_compare = a.new_label();
     cons_boxed_compare = a.new_label();
+    atom_boxed_compare = a.new_label();
+    cons_boxed_header_compare = a.new_label();
+    maybe_nil_boxed_compare = a.new_label();
+    maybe_pid_port_boxed_compare = a.new_label();
+    external_pid_boxed = a.new_label();
+    external_port_boxed = a.new_label();
+    cross_id_compare = a.new_label();
+    same_external_pid_compare = a.new_label();
+    same_external_port_compare = a.new_label();
 
     emit_enter_frame();
 
@@ -2499,10 +2512,13 @@ void BeamGlobalAssembler::emit_arith_compare_shared() {
         ERTS_CT_ASSERT((_TAG_HEADER_SUB_BITS & _BITSTRING_TAG_MASK) ==
                        _TAG_HEADER_HEAP_BITS);
 
-        /* The unboxed term can use the cons ordering only if it really is a
-         * list cell. The masked header identifies heap and sub-bitstrings.
+        /* Validate cons terms before entering the shared boxed header
+         * comparison. Nil reaches that comparison from atom_boxed_compare
+         * because it has the same ordering against boxed terms. The masked
+         * header identifies heap and sub-bitstrings.
          */
-        emit_is_cons(generic_compare, ARG3);
+        emit_is_cons(atom_boxed_compare, ARG3);
+        a.bind(cons_boxed_header_compare);
         boxed_ptr = emit_ptr_val(ARG5, ARG4);
         a.mov(RETd, emit_boxed_val(boxed_ptr, 0, sizeof(Uint32)));
         a.and_(RETd, imm(_BITSTRING_TAG_MASK));
@@ -2512,6 +2528,127 @@ void BeamGlobalAssembler::emit_arith_compare_shared() {
         a.and_(x86::al, imm(1));
         a.neg(x86::al);
         a.or_(x86::al, imm(1));
+        emit_leave_frame();
+        a.ret();
+    }
+
+    a.bind(atom_boxed_compare);
+    {
+        ERTS_CT_ASSERT((_TAG_IMMED2_MASK & _TAG_IMMED1_MASK) ==
+                       _TAG_IMMED1_MASK);
+        ERTS_CT_ASSERT(_TAG_IMMED2_ATOM == _TAG_IMMED1_IMMED2);
+        ERTS_CT_ASSERT((_TAG_IMMED2_ATOM &
+                        (_TAG_IMMED2_MASK ^ _TAG_IMMED1_MASK)) == 0);
+
+        /* The low immediate tag from the small check is still in ARG5d. */
+        a.cmp(ARG5d, imm(_TAG_IMMED1_IMMED2));
+        a.jne(maybe_pid_port_boxed_compare);
+        a.test(ARG3.r8(),
+               imm(_TAG_IMMED2_MASK ^ _TAG_IMMED1_MASK));
+        a.jne(maybe_nil_boxed_compare);
+
+        x86::Gp atom_boxed_ptr = emit_ptr_val(ARG5, ARG4);
+        a.mov(RETd,
+              emit_boxed_val(atom_boxed_ptr, 0, sizeof(Uint32)));
+        a.and_(RETd, imm(_TAG_HEADER_MASK));
+        /* Check floats first: clearing the bignum sign bit would turn the
+         * native-record header into the float header. */
+        a.cmp(RETd, imm(_TAG_HEADER_FLOAT));
+        a.sete(ARG3.r8());
+
+        ERTS_CT_ASSERT((_TAG_HEADER_POS_BIG ^ _TAG_HEADER_NEG_BIG) ==
+                       (1 << _TAG_PRIMARY_SIZE));
+        a.and_(RETd,
+               imm(_TAG_HEADER_MASK ^
+                   (_TAG_HEADER_POS_BIG ^ _TAG_HEADER_NEG_BIG)));
+        a.cmp(RETd, imm(_TAG_HEADER_POS_BIG));
+        a.sete(RETb);
+        a.or_(RETb, ARG3.r8());
+
+        a.xor_(RETb, ARG1.r8());
+        a.and_(RETb, imm(1));
+        a.neg(RETb);
+        a.or_(RETb, imm(1));
+        emit_leave_frame();
+        a.ret();
+    }
+
+    a.bind(maybe_nil_boxed_compare);
+    {
+        /* Nil shares the cons ordering against boxed terms; all other
+         * immediate2 tags still use the generic comparison. */
+        a.cmp(ARG3, imm(NIL));
+        a.je(cons_boxed_header_compare);
+        a.jmp(generic_compare);
+    }
+
+    a.bind(maybe_pid_port_boxed_compare);
+    {
+        /* Small and cons terms were handled earlier. For a valid term on
+         * this failed-cons edge, a non-immediate2 tag is an internal pid or
+         * port; their relative order against non-ID boxed terms is equal. */
+        x86::Gp id_boxed_ptr = emit_ptr_val(ARG5, ARG4);
+        a.mov(RETd, emit_boxed_val(id_boxed_ptr, 0, sizeof(Uint32)));
+        a.and_(RETd, imm(_TAG_HEADER_MASK));
+
+        /* Same-category external IDs need node/serial ordering from C. */
+        a.cmp(RETd, imm(_TAG_HEADER_EXTERNAL_PID));
+        a.je(external_pid_boxed);
+        a.cmp(RETd, imm(_TAG_HEADER_EXTERNAL_PORT));
+        a.je(external_port_boxed);
+
+        /* Big, ref, fun, and float headers precede both internal IDs.
+         * External refs do too; tuple/record/map/bitstring headers follow. */
+        ERTS_CT_ASSERT(_TAG_HEADER_NEG_BIG > _TAG_HEADER_POS_BIG);
+        ERTS_CT_ASSERT(_TAG_HEADER_REF > _TAG_HEADER_NEG_BIG);
+        ERTS_CT_ASSERT(_TAG_HEADER_FUN > _TAG_HEADER_REF);
+        ERTS_CT_ASSERT(_TAG_HEADER_FLOAT > _TAG_HEADER_FUN);
+        a.cmp(RETd, imm(_TAG_HEADER_EXTERNAL_REF));
+        a.sete(ARG3.r8());
+        a.sub(RETd, imm(_TAG_HEADER_POS_BIG));
+        a.cmp(RETd, imm(_TAG_HEADER_FLOAT - _TAG_HEADER_POS_BIG));
+        a.setbe(RETb);
+        a.or_(RETb, ARG3.r8());
+
+        a.bind(cross_id_compare);
+        a.xor_(RETb, ARG1.r8());
+        a.and_(RETb, imm(1));
+        a.neg(RETb);
+        a.or_(RETb, imm(1));
+        emit_leave_frame();
+        a.ret();
+
+        /* Internal ports sort before external pids; external ports sort
+         * before internal pids. Bit 2 distinguishes the internal tags. */
+        ERTS_CT_ASSERT((_TAG_IMMED1_PORT ^ _TAG_IMMED1_PID) == 0x4);
+        ERTS_CT_ASSERT((_TAG_IMMED1_PID & 0x4) == 0);
+        a.bind(external_pid_boxed);
+        a.test(ARG3d, imm(_TAG_IMMED1_PORT ^ _TAG_IMMED1_PID));
+        a.je(same_external_pid_compare);
+        a.xor_(RETb, RETb);
+        a.jmp(cross_id_compare);
+
+        a.bind(external_port_boxed);
+        a.test(ARG3d, imm(_TAG_IMMED1_PORT ^ _TAG_IMMED1_PID));
+        a.jne(same_external_port_compare);
+        a.mov(RETb, imm(1));
+        a.jmp(cross_id_compare);
+
+        a.bind(same_external_pid_compare);
+        emit_enter_runtime();
+        comment("erts_cmp_pids(X, Y);");
+        runtime_call<Sint (*)(Eterm, Eterm), erts_cmp_pids>();
+        emit_leave_runtime();
+        a.test(RET, RET);
+        emit_leave_frame();
+        a.ret();
+
+        a.bind(same_external_port_compare);
+        emit_enter_runtime();
+        comment("erts_cmp_mixed_ports(X, Y);");
+        runtime_call<Sint (*)(Eterm, Eterm), erts_cmp_mixed_ports>();
+        emit_leave_runtime();
+        a.test(RET, RET);
         emit_leave_frame();
         a.ret();
     }

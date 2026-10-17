@@ -21,6 +21,7 @@
 %%
 
 -module(op_SUITE).
+-record #atom_boxed_record{value=0}.
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
@@ -29,7 +30,8 @@
          bsl_bsr/1,logical/1,t_not/1,relop_simple/1,relop/1,
          complex_relop/1,unsafe_fusing/1,
          range_tests/1,combined_relops/1,typed_relop/1,
-         term_equivalence/1,atom_ordering/1,mixed_small_float/1,
+         term_equivalence/1,atom_ordering/1,atom_boxed_ordering/1,
+         mixed_small_float/1,
          small_boxed_ordering/1,
          hamt_comparison_paths/1,
          cons_boxed_ordering/1,
@@ -46,7 +48,8 @@ all() ->
     [bsl_bsr, logical, t_not, relop_simple, relop,
      complex_relop, unsafe_fusing, range_tests,
      combined_relops, typed_relop, term_equivalence,
-     atom_ordering, mixed_small_float, small_boxed_ordering,
+     atom_ordering, atom_boxed_ordering, mixed_small_float,
+     small_boxed_ordering,
      hamt_comparison_paths, cons_boxed_ordering, list_small_head_ordering,
      is_in_range].
 
@@ -1241,6 +1244,140 @@ atom_ordering(_Config) ->
                    {list_to_atom([16#7F]), list_to_atom([16#80])}],
     lists:foreach(fun check_nested_atom_order/1, NestedPairs),
     ok.
+
+atom_boxed_ordering(_Config) ->
+    <<PosZero/float>> = <<0:1,0:63>>,
+    <<NegZero/float>> = <<1:1,0:63>>,
+    Parent = binary:copy(<<42>>, 96),
+    SubBinary = binary:part(Parent, 1, 65),
+    <<_:3, SubBits:520/bits, _/bitstring>> = <<Parent/binary>>,
+    520 = bit_size(SubBits),
+
+    HamtMap = maps:from_list([{K, K} || K <- lists:seq(1, 33)]),
+    LocalFun = fun(X) -> X end,
+    ExternalFun = fun erlang:length/1,
+    NumericBoxed = [PosZero, NegZero, 1.5, 1 bsl 80, -(1 bsl 80)],
+    OtherBoxed = [{}, {boxed}, #{}, #{key => value}, HamtMap,
+                  <<>>, <<1:1>>, Parent, SubBinary, SubBits, make_ref(),
+                  LocalFun, ExternalFun, #atom_boxed_record{}] ++
+                 atom_boxed_external_terms(),
+    Atom = boxed_ordering_atom,
+
+    lists:foreach(
+      fun(Boxed) ->
+              check_atom_boxed_pair(Atom, Boxed, 1),
+              check_atom_boxed_pair(Boxed, Atom, -1)
+      end, NumericBoxed),
+    lists:foreach(
+      fun(Boxed) ->
+              check_atom_boxed_pair(Atom, Boxed, -1),
+              check_atom_boxed_pair(Boxed, Atom, 1)
+      end, OtherBoxed),
+
+    %% Cross-category external PID/port pairs use the explicit category
+    %% ordering below; same-category identifier data remains a C comparison.
+    Pid = self(),
+    Port = erlang:list_to_port("#Port<0.0>"),
+    [ExternalRef, ExternalPort, ExternalPid] = atom_boxed_external_terms(),
+    FallbackPairs = [{[], 1.0, 1}, {[], {}, 1}, {[], <<>>, -1},
+                     {Pid, 1.0, 1}, {Pid, {}, -1},
+                     {Pid, <<>>, -1},
+                     {Port, 1.0, 1}, {Port, {}, -1},
+                     {Port, <<>>, -1}],
+    lists:foreach(
+      fun({Immediate, Boxed, Cmp}) ->
+              check_atom_boxed_pair(Immediate, Boxed, Cmp),
+              check_atom_boxed_pair(Boxed, Immediate, -Cmp)
+      end, FallbackPairs),
+
+    %% Internal pid/port terms follow boxed numbers, refs, and funs, but
+    %% precede tuples, records, maps, and bitstrings.
+    RefAndFunBoxes = [make_ref(), ExternalRef, LocalFun, ExternalFun],
+    BeforeIdBoxes = NumericBoxed ++ RefAndFunBoxes,
+    AfterIdBoxes = [{}, {boxed}, #{}, #{key => value}, HamtMap,
+                    #atom_boxed_record{}, <<>>, <<1:1>>, Parent,
+                    SubBinary, SubBits],
+    lists:foreach(
+      fun(Boxed) ->
+              check_atom_boxed_pair(Pid, Boxed, 1),
+              check_atom_boxed_pair(Boxed, Pid, -1),
+              check_atom_boxed_pair(Port, Boxed, 1),
+              check_atom_boxed_pair(Boxed, Port, -1)
+      end, BeforeIdBoxes),
+    lists:foreach(
+      fun(Boxed) ->
+              check_atom_boxed_pair(Pid, Boxed, -1),
+              check_atom_boxed_pair(Boxed, Pid, 1),
+              check_atom_boxed_pair(Port, Boxed, -1),
+              check_atom_boxed_pair(Boxed, Port, 1)
+      end, AfterIdBoxes),
+
+    %% Same-category external IDs need C's node and ID-data ordering;
+    %% cross-category pairs follow the explicit port/PID category order.
+    ExternalIdPairs = [{Pid, ExternalPid}, {Port, ExternalPort},
+                       {Pid, ExternalPort}, {Port, ExternalPid}],
+    lists:foreach(
+      fun({A, B}) -> check_external_id_pair(A, B) end,
+      ExternalIdPairs),
+
+    %% Nil must take the same boxed ordering as a cons cell, including the
+    %% native-record/float header edge case. Keep expected signs explicit so
+    %% this does not use the comparator under test as its own oracle.
+    NilAfterBoxed = NumericBoxed ++
+                    [{}, {boxed}, #{}, #{key => value}, HamtMap,
+                     make_ref(), LocalFun, ExternalFun,
+                     #atom_boxed_record{}] ++ atom_boxed_external_terms(),
+    NilBeforeBoxed = [<<>>, <<1:1>>, Parent, SubBinary, SubBits],
+    lists:foreach(
+      fun(Boxed) ->
+              check_atom_boxed_pair([], Boxed, 1),
+              check_atom_boxed_pair(Boxed, [], -1)
+      end, NilAfterBoxed),
+    lists:foreach(
+      fun(Boxed) ->
+              check_atom_boxed_pair([], Boxed, -1),
+              check_atom_boxed_pair(Boxed, [], 1)
+      end, NilBeforeBoxed),
+    ok.
+
+atom_boxed_external_terms() ->
+    Node = atom_to_binary(atom_boxed_external@localhost, latin1),
+    NodeExt = <<100, (byte_size(Node)):16/big, Node/binary>>,
+    ExternalPid = binary_to_term(
+                    <<131, 88, NodeExt/binary,
+                      32768:32/big, 1:32/big, 4:32/big>>),
+    ExternalPort = binary_to_term(
+                     <<131, 89, NodeExt/binary,
+                       1:32/big, 4:32/big>>),
+    ExternalRef = binary_to_term(
+                    <<131, 90, 4:16/big, NodeExt/binary,
+                      4:32/big,
+                      1:32/big, 2:32/big, 3:32/big, 4:32/big>>),
+    true = is_pid(ExternalPid),
+    true = is_port(ExternalPort),
+    true = is_reference(ExternalRef),
+    ExternalNode = atom_boxed_external@localhost,
+    ExternalNode = node(ExternalPid),
+    ExternalNode = node(ExternalPort),
+    ExternalNode = node(ExternalRef),
+    [ExternalRef, ExternalPort, ExternalPid].
+
+check_external_id_pair(A, B) ->
+    Cmp = erts_internal:cmp_term(A, B),
+    ReverseCmp = erts_internal:cmp_term(B, A),
+    ReverseCmp = -Cmp,
+    check_atom_boxed_pair(A, B, Cmp).
+
+check_atom_boxed_pair(A, B, Cmp) ->
+    Cmp = generic_term_order(A, B),
+    ReverseCmp = -Cmp,
+    ReverseCmp = generic_term_order(B, A),
+    check_relops(['==', '/=', '=:=', '=/=', '<', '=<', '>', '>='],
+                 A, B, Cmp),
+    check_relops(['==', '/=', '=:=', '=/=', '<', '=<', '>', '>='],
+                 B, A, ReverseCmp),
+    check_mixed_small_float_minmax(A, B, Cmp),
+    check_mixed_small_float_minmax(B, A, ReverseCmp).
 
 atom_name_order([], []) -> 0;
 atom_name_order([], [_|_]) -> -1;
